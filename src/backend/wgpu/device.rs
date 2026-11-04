@@ -75,6 +75,19 @@ pub(crate) async fn request_device_from_adapter(
     if descriptor.required_features.fill_mode_non_solid {
         requested_features.insert(wgpu::Features::POLYGON_MODE_LINE);
     }
+    let available = adapter.features();
+    if available.contains(wgpu::Features::IMMEDIATES) && adapter.limits().max_immediate_size > 0 {
+        requested_features.insert(wgpu::Features::IMMEDIATES);
+    }
+    if available.contains(wgpu::Features::TIMESTAMP_QUERY) {
+        requested_features.insert(wgpu::Features::TIMESTAMP_QUERY);
+    }
+    if available.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+        requested_features.insert(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+    }
+    if available.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+        requested_features.insert(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
+    }
     if !adapter.features().contains(requested_features) {
         return Err(Error::recoverable(ErrorKind::Unsupported(
             "required_device_features_unavailable",

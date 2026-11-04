@@ -4,7 +4,6 @@ use rotex_types::{ColorAttachmentLoad, DepthAttachmentLoad, PassColorTarget, Rhi
 
 use super::WgpuBridge;
 use super::bindings;
-use super::compute_pipeline_cache;
 use super::shader_cache;
 use super::surface;
 use super::types::{
@@ -181,7 +180,10 @@ fn rhi_build_pipeline(
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("rotex-wgpu-rhi-pipeline-layout"),
                 bind_group_layouts: &layout_refs,
-                immediate_size: 0,
+                immediate_size: super::extended::immediate_size(
+                    &bridge.device.raw,
+                    &material.shaders.layout,
+                ),
             });
 
     let wgpu_cull_mode = match material.cull_mode {
@@ -287,21 +289,6 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     .queue
                     .write_buffer(&buf_res.buffer, *offset, data);
             }
-            RhiCommand::TransitionBuffer { .. } => {
-                return Err(Error::unsupported("buffer barriers are not implemented"));
-            }
-            RhiCommand::DispatchCompute(pass) => {
-                let mut encoder = bridge.recording_encoder.take().unwrap_or_else(|| {
-                    bridge
-                        .device
-                        .raw
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("rotex-wgpu-encoder"),
-                        })
-                });
-                compute_pipeline_cache::record_compute_dispatch(bridge, &mut encoder, pass)?;
-                bridge.recording_encoder = Some(encoder);
-            }
             RhiCommand::BeginRenderPass { pass } => {
                 let mut encoder = bridge.recording_encoder.take().ok_or_else(|| {
                     Error::fatal(ErrorKind::Unsupported(
@@ -328,10 +315,12 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                             .config
                             .format;
                     }
-                    PassColorTarget::Texture(_) => {
-                        return Err(Error::fatal(ErrorKind::Unsupported(
-                            "render to texture not implemented",
-                        )));
+                    PassColorTarget::Texture(id) => {
+                        let texture = bridge.resources.textures.get(id).ok_or_else(|| {
+                            Error::fatal(ErrorKind::Unsupported("render target texture not found"))
+                        })?;
+                        color_view = texture.default_view.clone();
+                        surface_format = texture.format;
                     }
                 }
 
@@ -343,25 +332,28 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     ColorAttachmentLoad::Load => wgpu::LoadOp::Load,
                 };
 
-                let depth_attachment = if pass.uses_depth_attachment() {
-                    let depth_view = ensure_depth_target(bridge)?;
-                    let depth_load_op = match pass.depth_load {
-                        DepthAttachmentLoad::Clear => wgpu::LoadOp::Clear(pass.clear_depth),
-                        DepthAttachmentLoad::Load => wgpu::LoadOp::Load,
-                        DepthAttachmentLoad::None => wgpu::LoadOp::Clear(pass.clear_depth),
-                    };
-                    Some(wgpu::RenderPassDepthStencilAttachment {
+                let depth_view_owned = if pass.uses_depth_attachment() {
+                    Some(ensure_depth_target(bridge)?.clone())
+                } else {
+                    None
+                };
+                let depth_load_op = match pass.depth_load {
+                    DepthAttachmentLoad::Clear => wgpu::LoadOp::Clear(pass.clear_depth),
+                    DepthAttachmentLoad::Load => wgpu::LoadOp::Load,
+                    DepthAttachmentLoad::None => wgpu::LoadOp::Clear(pass.clear_depth),
+                };
+                let depth_attachment = depth_view_owned.as_ref().map(|depth_view| {
+                    wgpu::RenderPassDepthStencilAttachment {
                         view: depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: depth_load_op,
                             store: wgpu::StoreOp::Store,
                         }),
                         stencil_ops: None,
-                    })
-                } else {
-                    None
-                };
+                    }
+                });
 
+                let occlusion_query = occlusion_query_for_pass(bridge, cmd_iter.clone());
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(pass.name.as_str()),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -374,7 +366,7 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                         },
                     })],
                     depth_stencil_attachment: depth_attachment,
-                    occlusion_query_set: None,
+                    occlusion_query_set: occlusion_query.as_ref(),
                     timestamp_writes: None,
                     multiview_mask: None,
                 });
@@ -383,7 +375,10 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     label: pass.name.clone(),
                 });
 
-                if let Some(ref bundle) = bridge.render_bundle {
+                if remaining_needs_direct(cmd_iter.clone()) {
+                    record_direct_pass(&mut render_pass, bridge, &mut cmd_iter)?;
+                    bridge.render_bundle = None;
+                } else if let Some(ref bundle) = bridge.render_bundle {
                     render_pass.execute_bundles(std::slice::from_ref(bundle));
                     loop {
                         match cmd_iter.next() {
@@ -433,42 +428,6 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     loop {
                         match cmd_iter.next() {
                             Some(RhiCommand::EndRenderPass) => break,
-                            Some(RhiCommand::BindGraphicsPipeline {
-                                material,
-                                mesh,
-                                depth_enabled,
-                            }) => {
-                                let mesh_id = *mesh;
-                                let mat_id = *material;
-                                let depth_flag = *depth_enabled;
-                                let (vertex_layout_id, vertex_layout_clone) = {
-                                    let mesh_res =
-                                        bridge.resources.meshes.get(&mesh_id).ok_or_else(|| {
-                                            Error::recoverable(ErrorKind::ResourceNotFound("mesh"))
-                                        })?;
-                                    (mesh_res.vertex_layout_id, mesh_res.vertex_layout.clone())
-                                };
-                                let pipeline = rhi_pipeline_for_draw(
-                                    bridge,
-                                    mat_id,
-                                    vertex_layout_id,
-                                    &vertex_layout_clone,
-                                    depth_flag,
-                                )?;
-                                ops.push(DrawOp {
-                                    pipeline: pipeline as *const wgpu::RenderPipeline,
-                                    bind_groups: Vec::new(),
-                                    vertex_buffer: std::ptr::null(),
-                                    index_buffer: std::ptr::null(),
-                                    index_format: wgpu::IndexFormat::Uint32,
-                                    index_count: 0,
-                                    instance_count: 0,
-                                    first_index: 0,
-                                    vertex_offset: 0,
-                                    first_instance: 0,
-                                    dynamic_offsets: Vec::new(),
-                                });
-                            }
                             Some(RhiCommand::BindGroups {
                                 first_slot,
                                 bind_groups,
@@ -595,6 +554,109 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                 bridge.recording_encoder = Some(encoder);
             }
             RhiCommand::EndRenderPass => {}
+            RhiCommand::BeginComputePass { .. } => {
+                bridge.compute_pass_open = true;
+                bridge.compute_binds.clear();
+            }
+            RhiCommand::EndComputePass => {
+                bridge.compute_pass_open = false;
+                bridge.active_compute_pipeline = None;
+                bridge.compute_binds.clear();
+            }
+            RhiCommand::SetComputePipeline { pipeline } => {
+                bridge.active_compute_pipeline = Some(*pipeline);
+            }
+            RhiCommand::Dispatch { workgroup_count } => {
+                super::extended::dispatch_compute(bridge, *workgroup_count)?;
+            }
+            RhiCommand::BindGroups {
+                first_slot,
+                bind_groups,
+                dynamic_offsets,
+            } if bridge.compute_pass_open => {
+                for (index, group) in bind_groups.iter().enumerate() {
+                    let offsets = if index == 0 {
+                        dynamic_offsets.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    bridge
+                        .compute_binds
+                        .push((*first_slot + index as u32, *group, offsets));
+                }
+            }
+            RhiCommand::CopyBufferToBuffer {
+                src,
+                src_offset,
+                dst,
+                dst_offset,
+                size,
+            } => {
+                super::extended::copy_buffer_to_buffer(
+                    bridge,
+                    *src,
+                    *src_offset,
+                    *dst,
+                    *dst_offset,
+                    *size,
+                )?;
+            }
+            RhiCommand::CopyBufferToTexture {
+                src,
+                src_offset,
+                dst,
+                bytes_per_row,
+                width,
+                height,
+            } => {
+                super::extended::copy_buffer_to_texture(
+                    bridge,
+                    *src,
+                    *src_offset,
+                    *dst,
+                    *bytes_per_row,
+                    *width,
+                    *height,
+                )?;
+            }
+            RhiCommand::CopyTextureToBuffer {
+                src,
+                dst,
+                dst_offset,
+                bytes_per_row,
+                width,
+                height,
+            } => {
+                super::extended::copy_texture_to_buffer(
+                    bridge,
+                    *src,
+                    *dst,
+                    *dst_offset,
+                    *bytes_per_row,
+                    *width,
+                    *height,
+                )?;
+            }
+            RhiCommand::Barrier { .. } => {}
+            RhiCommand::WriteTimestamp { query_set, index } => {
+                super::extended::write_timestamp(bridge, *query_set, *index)?;
+            }
+            RhiCommand::ResolveQuerySet {
+                query_set,
+                first_query,
+                query_count,
+                destination,
+                offset,
+            } => {
+                super::extended::resolve_query_set(
+                    bridge,
+                    *query_set,
+                    *first_query,
+                    *query_count,
+                    *destination,
+                    *offset,
+                )?;
+            }
             RhiCommand::SubmitFrame { present } => {
                 if let Some(encoder) = bridge.recording_encoder.take() {
                     bridge.device.queue.submit(Some(encoder.finish()));
@@ -610,4 +672,351 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
     }
 
     Ok(())
+}
+
+fn remaining_needs_direct<'a>(commands: impl Iterator<Item = &'a RhiCommand>) -> bool {
+    for command in commands {
+        match command {
+            RhiCommand::EndRenderPass => return false,
+            RhiCommand::SetViewport { .. }
+            | RhiCommand::SetScissor { .. }
+            | RhiCommand::Draw { .. }
+            | RhiCommand::SetGraphicsPipeline { .. }
+            | RhiCommand::BindVertexBuffer { .. }
+            | RhiCommand::BindIndexBuffer { .. }
+            | RhiCommand::PushConstants { .. }
+            | RhiCommand::WriteTimestamp { .. } => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn occlusion_query_for_pass<'a>(
+    bridge: &WgpuBridge,
+    commands: impl Iterator<Item = &'a RhiCommand>,
+) -> Option<wgpu::QuerySet> {
+    for command in commands {
+        match command {
+            RhiCommand::EndRenderPass => return None,
+            RhiCommand::WriteTimestamp { query_set, .. } => {
+                if let Some(resource) = bridge.resources.query_sets.get(query_set) {
+                    if resource.ty == rotex_types::QueryType::Occlusion {
+                        return Some(resource.query_set.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn record_direct_pass<'a>(
+    pass: &mut wgpu::RenderPass<'_>,
+    bridge: &mut WgpuBridge,
+    commands: &mut impl Iterator<Item = &'a RhiCommand>,
+) -> Result<(), Error> {
+    loop {
+        match commands.next() {
+            Some(RhiCommand::EndRenderPass) => return Ok(()),
+            Some(RhiCommand::BindGroups {
+                first_slot,
+                bind_groups,
+                dynamic_offsets,
+            }) => {
+                for (index, group_id) in bind_groups.iter().enumerate() {
+                    let group = bridge
+                        .resources
+                        .bind_groups
+                        .get(group_id)
+                        .ok_or_else(|| {
+                            Error::fatal(ErrorKind::Unsupported("bind group not found"))
+                        })?
+                        .clone();
+                    let offsets = if index == 0 {
+                        dynamic_offsets.as_slice()
+                    } else {
+                        &[]
+                    };
+                    pass.set_bind_group(*first_slot + index as u32, &group, offsets);
+                }
+            }
+            Some(RhiCommand::SetVertexBuffers {
+                mesh,
+                first_binding,
+            }) => {
+                let mesh_res = bridge
+                    .resources
+                    .meshes
+                    .get(mesh)
+                    .ok_or_else(|| Error::recoverable(ErrorKind::ResourceNotFound("mesh")))?;
+                let buffer = mesh_res.vertex_buffer.clone();
+                pass.set_vertex_buffer(*first_binding, buffer.slice(..));
+            }
+            Some(RhiCommand::SetIndexBuffer { mesh }) => {
+                let mesh_res = bridge
+                    .resources
+                    .meshes
+                    .get(mesh)
+                    .ok_or_else(|| Error::recoverable(ErrorKind::ResourceNotFound("mesh")))?;
+                let buffer = mesh_res.index_buffer.clone();
+                let format = mesh_res.index_format;
+                pass.set_index_buffer(buffer.slice(..), format);
+            }
+            Some(RhiCommand::DrawIndexed {
+                index_count,
+                instance_count,
+                first_index,
+                vertex_offset,
+                first_instance,
+            }) => {
+                pass.draw_indexed(
+                    *first_index..(*first_index + *index_count),
+                    *vertex_offset,
+                    *first_instance..(*first_instance + *instance_count),
+                );
+            }
+            Some(RhiCommand::Draw {
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            }) => {
+                pass.draw(
+                    *first_vertex..(*first_vertex + *vertex_count),
+                    *first_instance..(*first_instance + *instance_count),
+                );
+            }
+            Some(RhiCommand::SetViewport {
+                x,
+                y,
+                width,
+                height,
+                min_depth,
+                max_depth,
+            }) => {
+                pass.set_viewport(*x, *y, *width, *height, *min_depth, *max_depth);
+            }
+            Some(RhiCommand::SetScissor {
+                x,
+                y,
+                width,
+                height,
+            }) => {
+                pass.set_scissor_rect(*x, *y, *width, *height);
+            }
+            Some(RhiCommand::SetGraphicsPipeline { pipeline }) => {
+                let pipeline = bridge
+                    .resources
+                    .graphics_pipelines
+                    .get(pipeline)
+                    .ok_or_else(|| Error::unsupported("graphics pipeline not found"))?
+                    .clone();
+                pass.set_pipeline(&pipeline);
+            }
+            Some(RhiCommand::BindVertexBuffer {
+                buffer,
+                binding,
+                offset,
+            }) => {
+                let buffer = bridge
+                    .resources
+                    .buffers
+                    .get(buffer)
+                    .ok_or_else(|| Error::unsupported("vertex buffer not found"))?
+                    .buffer
+                    .clone();
+                pass.set_vertex_buffer(*binding, buffer.slice(*offset..));
+            }
+            Some(RhiCommand::BindIndexBuffer {
+                buffer,
+                offset,
+                format,
+            }) => {
+                let buffer = bridge
+                    .resources
+                    .buffers
+                    .get(buffer)
+                    .ok_or_else(|| Error::unsupported("index buffer not found"))?
+                    .buffer
+                    .clone();
+                pass.set_index_buffer(
+                    buffer.slice(*offset..),
+                    super::types::map_index_format(*format),
+                );
+            }
+            Some(RhiCommand::PushConstants { offset, data, .. }) => {
+                if !bridge
+                    .device
+                    .raw
+                    .features()
+                    .contains(wgpu::Features::IMMEDIATES)
+                {
+                    return Err(Error::unsupported("push constants are unavailable"));
+                }
+                pass.set_immediates(*offset, data);
+            }
+            Some(RhiCommand::WriteTimestamp { query_set, index }) => {
+                let resource = bridge
+                    .resources
+                    .query_sets
+                    .get(query_set)
+                    .ok_or_else(|| Error::unsupported("query set not found"))?;
+                let kind = resource.ty;
+                let query_set = resource.query_set.clone();
+                match kind {
+                    rotex_types::QueryType::Timestamp => {
+                        if !bridge
+                            .device
+                            .raw
+                            .features()
+                            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+                        {
+                            return Err(Error::unsupported("timestamp queries are unavailable"));
+                        }
+                        pass.write_timestamp(&query_set, *index);
+                    }
+                    rotex_types::QueryType::Occlusion => {
+                        pass.begin_occlusion_query(*index);
+                        pass.end_occlusion_query();
+                    }
+                }
+            }
+            Some(_) => {
+                return Err(Error::unsupported(
+                    "command is not implemented inside a render pass",
+                ));
+            }
+            None => {
+                return Err(Error::fatal(ErrorKind::Unsupported(
+                    "missing EndRenderPass command",
+                )));
+            }
+        }
+    }
+}
+
+pub(super) fn create_explicit_pipeline(
+    bridge: &mut WgpuBridge,
+    descriptor: &rotex_types::GraphicsPipelineDescriptor,
+) -> Result<wgpu::RenderPipeline, Error> {
+    let vertex_shader = shader_cache::get_or_create_shader_module(
+        bridge,
+        "rotex-wgpu-explicit-vertex",
+        &descriptor.shaders.vertex,
+    )?;
+    let fragment_shader = shader_cache::get_or_create_shader_module(
+        bridge,
+        "rotex-wgpu-explicit-fragment",
+        &descriptor.shaders.fragment,
+    )?;
+    let layouts = bindings::build_set_layouts_from_abstract_layout(
+        &bridge.device.raw,
+        &descriptor.shaders.layout,
+    )?;
+    let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
+    let immediate_size =
+        super::extended::immediate_size(&bridge.device.raw, &descriptor.shaders.layout);
+    let pipeline_layout =
+        bridge
+            .device
+            .raw
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rotex-wgpu-explicit-layout"),
+                bind_group_layouts: &layout_refs,
+                immediate_size,
+            });
+    let mut vertex_layouts = Vec::with_capacity(descriptor.vertex_buffers.len());
+    for layout in &descriptor.vertex_buffers {
+        vertex_layouts.push(super::resources::translate_vertex_layout(layout)?);
+    }
+    let vertex_buffers: Vec<wgpu::VertexBufferLayout<'_>> = vertex_layouts
+        .iter()
+        .map(|layout| layout.as_wgpu())
+        .collect();
+    let targets: Vec<wgpu::TextureFormat> = if descriptor.targets.is_empty() {
+        vec![
+            bridge
+                .swapchain_format
+                .unwrap_or(wgpu::TextureFormat::Rgba8Unorm),
+        ]
+    } else {
+        descriptor
+            .targets
+            .iter()
+            .map(|format| {
+                super::types::map_texture_format(*format)
+                    .ok_or_else(|| Error::unsupported("pipeline target format not implemented"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let blend = if descriptor.blend.enabled {
+        Some(wgpu::BlendState::ALPHA_BLENDING)
+    } else {
+        Some(wgpu::BlendState::REPLACE)
+    };
+    let color_targets: Vec<Option<wgpu::ColorTargetState>> = targets
+        .iter()
+        .map(|format| {
+            Some(wgpu::ColorTargetState {
+                format: *format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        })
+        .collect();
+    let cull_mode = match descriptor.cull_mode {
+        rotex_types::CullMode::None => None,
+        rotex_types::CullMode::Front => Some(wgpu::Face::Front),
+        rotex_types::CullMode::Back => Some(wgpu::Face::Back),
+    };
+    let topology = match descriptor.topology {
+        rotex_types::PrimitiveTopology::PointList => wgpu::PrimitiveTopology::PointList,
+        rotex_types::PrimitiveTopology::LineList => wgpu::PrimitiveTopology::LineList,
+        rotex_types::PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
+        rotex_types::PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+    };
+    Ok(bridge
+        .device
+        .raw
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rotex-wgpu-explicit-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &vertex_shader,
+                entry_point: Some(descriptor.shaders.vertex.entry_point.as_str()),
+                buffers: &vertex_buffers,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: if descriptor.depth_enabled {
+                Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth24Plus,
+                    depth_write_enabled: Some(descriptor.depth_write),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                })
+            } else {
+                None
+            },
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fragment_shader,
+                entry_point: Some(descriptor.shaders.fragment.entry_point.as_str()),
+                targets: &color_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        }))
 }

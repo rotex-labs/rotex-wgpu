@@ -58,7 +58,13 @@ pub struct WgpuTextureResource {
     pub texture: wgpu::Texture,
     pub default_view: wgpu::TextureView,
     pub format: wgpu::TextureFormat,
+    pub source_format: TextureFormat,
     pub size: (u32, u32),
+}
+
+pub struct WgpuQuerySet {
+    pub query_set: wgpu::QuerySet,
+    pub ty: rotex_types::QueryType,
 }
 
 pub struct DepthTarget {
@@ -99,6 +105,9 @@ pub struct ResourceStorage {
     pub buffers: HashMap<rotex_types::BufferId, crate::backend::wgpu::WgpuBuffer>,
     pub bind_group_layouts: HashMap<rotex_types::BindGroupLayoutId, wgpu::BindGroupLayout>,
     pub bind_groups: HashMap<rotex_types::BindGroupId, wgpu::BindGroup>,
+    pub samplers: HashMap<rotex_types::SamplerId, wgpu::Sampler>,
+    pub graphics_pipelines: HashMap<rotex_types::GraphicsPipelineId, wgpu::RenderPipeline>,
+    pub query_sets: HashMap<rotex_types::QuerySetId, WgpuQuerySet>,
 }
 
 pub fn map_vertex_format(format: VertexFormat) -> wgpu::VertexFormat {

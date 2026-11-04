@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 mod bindings;
 mod compute_pipeline_cache;
+mod extended;
 pub(crate) mod init;
 mod render;
 mod resources;
@@ -44,6 +45,9 @@ pub struct WgpuBridge {
     pub(crate) render_bundle: Option<wgpu::RenderBundle>,
     pub(crate) pending_acquire_skips: u32,
     pre_present_hook: Option<fn()>,
+    pub(crate) compute_pass_open: bool,
+    pub(crate) active_compute_pipeline: Option<ComputePipelineId>,
+    pub(crate) compute_binds: Vec<(u32, rotex_types::BindGroupId, Vec<u32>)>,
 }
 
 impl WgpuBridge {
@@ -74,10 +78,8 @@ impl WgpuBridge {
         surface::resize(self, extent)
     }
 
-    pub fn read_texture(&mut self, _id: TextureId) -> Result<TextureReadback, Error> {
-        Err(Error::fatal(ErrorKind::Unsupported(
-            "Texture readback is not implemented on the WGPU backend",
-        )))
+    pub fn read_texture(&mut self, id: TextureId) -> Result<TextureReadback, Error> {
+        extended::read_texture(self, id)
     }
 
     pub fn destroy(self) {}
@@ -108,7 +110,7 @@ fn to_core_error(error: Error) -> CoreError {
 
 impl GpuBackend for WgpuBridge {
     fn capabilities(&self) -> rotex_types::BackendCapabilities {
-        crate::caps::capabilities_for(crate::caps::limits_from_wgpu(&self.device.adapter.limits()))
+        crate::caps::capabilities_for(&self.device.raw)
     }
 
     fn attach_surface(

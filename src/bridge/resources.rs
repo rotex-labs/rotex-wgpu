@@ -153,6 +153,60 @@ pub(super) fn create_resources(
                 bridge.resources.compute_pipelines.insert(id, result);
                 handles.push(ResourceHandle::ComputePipeline(id));
             }
+            ResourceCreateDescriptor::Sampler { id, sampler } => {
+                let id = rotex_types::SamplerId(id);
+                ensure_absent(&bridge.resources.samplers, &id)?;
+                let created = bridge.device.raw.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("rotex-wgpu-sampler"),
+                    mag_filter: map_filter(sampler.mag_filter),
+                    min_filter: map_filter(sampler.min_filter),
+                    address_mode_u: map_address(sampler.address_mode),
+                    address_mode_v: map_address(sampler.address_mode),
+                    address_mode_w: map_address(sampler.address_mode),
+                    ..Default::default()
+                });
+                bridge.resources.samplers.insert(id, created);
+                handles.push(ResourceHandle::Sampler(id));
+            }
+            ResourceCreateDescriptor::GraphicsPipeline { id, pipeline } => {
+                let id = rotex_types::GraphicsPipelineId(id);
+                ensure_absent(&bridge.resources.graphics_pipelines, &id)?;
+                let created = super::render::create_explicit_pipeline(bridge, &pipeline)?;
+                bridge.resources.graphics_pipelines.insert(id, created);
+                handles.push(ResourceHandle::GraphicsPipeline(id));
+            }
+            ResourceCreateDescriptor::QuerySet { id, query_set } => {
+                let id = rotex_types::QuerySetId(id);
+                ensure_absent(&bridge.resources.query_sets, &id)?;
+                if query_set.ty == rotex_types::QueryType::Timestamp
+                    && !bridge
+                        .device
+                        .raw
+                        .features()
+                        .contains(wgpu::Features::TIMESTAMP_QUERY)
+                {
+                    return Err(Error::unsupported("timestamp queries are unavailable"));
+                }
+                let created = bridge
+                    .device
+                    .raw
+                    .create_query_set(&wgpu::QuerySetDescriptor {
+                        label: Some("rotex-wgpu-query-set"),
+                        ty: match query_set.ty {
+                            rotex_types::QueryType::Timestamp => wgpu::QueryType::Timestamp,
+                            rotex_types::QueryType::Occlusion => wgpu::QueryType::Occlusion,
+                        },
+                        count: query_set.count,
+                    });
+                bridge.resources.query_sets.insert(
+                    id,
+                    super::types::WgpuQuerySet {
+                        query_set: created,
+                        ty: query_set.ty,
+                    },
+                );
+                handles.push(ResourceHandle::QuerySet(id));
+            }
             _ => return Err(Error::unsupported("resource create not implemented")),
         }
     }
@@ -282,10 +336,26 @@ fn destroy_resource(bridge: &mut WgpuBridge, handle: ResourceHandle) -> Result<(
                 .remove(&id)
                 .ok_or_else(|| Error::unsupported("bind group not found"))?;
         }
-        ResourceHandle::Sampler(_)
-        | ResourceHandle::GraphicsPipeline(_)
-        | ResourceHandle::QuerySet(_) => {
-            return Err(Error::unsupported("resource destroy not implemented"));
+        ResourceHandle::Sampler(id) => {
+            bridge
+                .resources
+                .samplers
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("sampler not found"))?;
+        }
+        ResourceHandle::GraphicsPipeline(id) => {
+            bridge
+                .resources
+                .graphics_pipelines
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("graphics pipeline not found"))?;
+        }
+        ResourceHandle::QuerySet(id) => {
+            bridge
+                .resources
+                .query_sets
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("query set not found"))?;
         }
         _ => return Err(Error::unsupported("resource destroy not implemented")),
     }
@@ -410,7 +480,14 @@ fn create_wgpu_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC
+            | if texture.render_attachment {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            } else {
+                wgpu::TextureUsages::empty()
+            },
         view_formats: &[],
     });
 
@@ -422,6 +499,7 @@ fn create_wgpu_texture(
         texture: raw_texture,
         default_view,
         format,
+        source_format: texture.format,
         size: (width, height),
     })
 }
@@ -482,7 +560,9 @@ fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Err
     Ok(())
 }
 
-fn translate_vertex_layout(layout: &VertexBufferLayout) -> Result<WgpuVertexLayout, Error> {
+pub(super) fn translate_vertex_layout(
+    layout: &VertexBufferLayout,
+) -> Result<WgpuVertexLayout, Error> {
     if layout.array_stride == 0 {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "vertex_layout_zero_stride",
@@ -622,6 +702,15 @@ fn map_wgpu_buffer_usage(desc: &BufferDescriptor) -> wgpu::BufferUsages {
     if usages.contains(BufferUsages::STORAGE) {
         flags |= wgpu::BufferUsages::STORAGE;
     }
+    if usages.contains(BufferUsages::COPY_SRC) {
+        flags |= wgpu::BufferUsages::COPY_SRC;
+    }
+    if usages.contains(BufferUsages::INDIRECT) {
+        flags |= wgpu::BufferUsages::INDIRECT;
+    }
+    if usages.contains(BufferUsages::QUERY_RESOLVE) {
+        flags |= wgpu::BufferUsages::QUERY_RESOLVE;
+    }
     if flags == wgpu::BufferUsages::COPY_DST {
         match desc.usage {
             BufferUsage::Vertex => flags |= wgpu::BufferUsages::VERTEX,
@@ -631,6 +720,21 @@ fn map_wgpu_buffer_usage(desc: &BufferDescriptor) -> wgpu::BufferUsages {
         }
     }
     flags
+}
+
+fn map_filter(mode: rotex_types::FilterMode) -> wgpu::FilterMode {
+    match mode {
+        rotex_types::FilterMode::Nearest => wgpu::FilterMode::Nearest,
+        rotex_types::FilterMode::Linear => wgpu::FilterMode::Linear,
+    }
+}
+
+fn map_address(mode: rotex_types::AddressMode) -> wgpu::AddressMode {
+    match mode {
+        rotex_types::AddressMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+        rotex_types::AddressMode::Repeat => wgpu::AddressMode::Repeat,
+        rotex_types::AddressMode::MirrorRepeat => wgpu::AddressMode::MirrorRepeat,
+    }
 }
 
 fn align_to_u64(value: u64, alignment: u64) -> u64 {

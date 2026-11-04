@@ -7,13 +7,13 @@ pub(crate) const CAPS: CoreCaps = CoreCaps {
     compute: Support::Native,
     storage_buffers: Support::Native,
     push_constants: Support::Absent,
-    barriers: Support::Absent,
-    queries: Support::Absent,
-    copies: Support::Absent,
-    readback: Support::Absent,
-    render_to_texture: Support::Absent,
+    barriers: Support::Emulated,
+    queries: Support::Native,
+    copies: Support::Native,
+    readback: Support::Native,
+    render_to_texture: Support::Native,
     dynamic_offsets: Support::Native,
-    explicit_pipelines: Support::Absent,
+    explicit_pipelines: Support::Native,
 };
 
 impl StaticCaps for WgpuBridge {
@@ -40,22 +40,22 @@ pub(crate) fn limits_from_wgpu(limits: &wgpu::Limits) -> Limits {
     }
 }
 
-pub(crate) fn capabilities_for(limits: Limits) -> BackendCapabilities {
+pub(crate) fn capabilities_for(device: &wgpu::Device) -> BackendCapabilities {
+    let mut core = CAPS;
+    let features = device.features();
+    if features.contains(wgpu::Features::IMMEDIATES) && device.limits().max_immediate_size > 0 {
+        core.push_constants = Support::Native;
+    }
+    if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+        core.queries = Support::Emulated;
+    }
     BackendCapabilities {
-        core: CAPS,
-        limits,
+        core,
+        limits: limits_from_wgpu(&device.limits()),
         extensions: FeatureSet::empty(),
     }
 }
 
 pub(crate) fn unsupported_feature_reporting() -> &'static [&'static str] {
-    &[
-        "push constants",
-        "barriers",
-        "queries",
-        "copies",
-        "readback",
-        "render to texture",
-        "explicit graphics pipelines",
-    ]
+    &["push constants"]
 }

@@ -26,5 +26,8 @@ pub(crate) fn init_bridge(instance: WgpuInstance, device: WgpuDevice) -> Result<
         render_bundle: None,
         pending_acquire_skips: 0,
         pre_present_hook: None,
+        compute_pass_open: false,
+        active_compute_pipeline: None,
+        compute_binds: Vec::new(),
     })
 }
