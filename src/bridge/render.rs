@@ -54,11 +54,15 @@ fn ensure_depth_target(bridge: &mut WgpuBridge) -> Result<&wgpu::TextureView, Er
         });
     }
 
-    Ok(&bridge
+    bridge
         .depth_target
         .as_ref()
-        .expect("depth target created")
-        .view)
+        .map(|target| &target.view)
+        .ok_or_else(|| {
+            Error::fatal(ErrorKind::Unsupported(
+                "depth target missing after creation",
+            ))
+        })
 }
 
 fn to_wgpu_color(clear: [f32; 4]) -> wgpu::Color {
@@ -168,7 +172,7 @@ fn rhi_build_pipeline(
     let wgpu_layouts = bindings::build_set_layouts_from_abstract_layout(
         &bridge.device.raw,
         &material.shaders.layout,
-    );
+    )?;
     let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = wgpu_layouts.iter().map(Some).collect();
     let pipeline_layout =
         bridge
@@ -255,7 +259,7 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                 bridge.recording_encoder = Some(encoder);
                 bridge.active_pass = None;
             }
-            RhiCommand::AcquireSwapchainImage => {
+            RhiCommand::AcquirePresentationTarget => {
                 let surface_texture = surface::acquire_surface_texture(bridge)?;
                 bridge.surface_texture = surface_texture;
                 if bridge.surface_texture.is_some() {
@@ -283,7 +287,9 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     .queue
                     .write_buffer(&buf_res.buffer, *offset, data);
             }
-            RhiCommand::TransitionBuffer { .. } => {}
+            RhiCommand::TransitionBuffer { .. } => {
+                return Err(Error::unsupported("buffer barriers are not implemented"));
+            }
             RhiCommand::DispatchCompute(pass) => {
                 let mut encoder = bridge.recording_encoder.take().unwrap_or_else(|| {
                     bridge
@@ -296,10 +302,7 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                 compute_pipeline_cache::record_compute_dispatch(bridge, &mut encoder, pass)?;
                 bridge.recording_encoder = Some(encoder);
             }
-            RhiCommand::BeginRenderPass {
-                pass,
-                image_index: _,
-            } => {
+            RhiCommand::BeginRenderPass { pass } => {
                 let mut encoder = bridge.recording_encoder.take().ok_or_else(|| {
                     Error::fatal(ErrorKind::Unsupported(
                         "no command encoder for render pass (call BeginFrame first)",
@@ -309,10 +312,10 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                 let color_view;
                 let surface_format;
                 match &pass.color_target {
-                    PassColorTarget::Swapchain => {
+                    PassColorTarget::Presentation => {
                         let surface_texture = bridge.surface_texture.as_ref().ok_or_else(|| {
                             Error::fatal(ErrorKind::Unsupported(
-                                "no surface texture (call AcquireSwapchainImage first)",
+                                "no surface texture (call AcquirePresentationTarget first)",
                             ))
                         })?;
                         color_view = surface_texture
@@ -424,6 +427,7 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                         first_index: u32,
                         vertex_offset: i32,
                         first_instance: u32,
+                        dynamic_offsets: Vec<u32>,
                     }
                     let mut ops: Vec<DrawOp> = Vec::new();
                     loop {
@@ -462,12 +466,13 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                                     first_index: 0,
                                     vertex_offset: 0,
                                     first_instance: 0,
+                                    dynamic_offsets: Vec::new(),
                                 });
                             }
-                            Some(RhiCommand::BindDescriptorSets {
-                                first_set,
+                            Some(RhiCommand::BindGroups {
+                                first_slot,
                                 bind_groups,
-                                dynamic_offsets: _,
+                                dynamic_offsets,
                             }) => {
                                 for (i, bg_id) in bind_groups.iter().enumerate() {
                                     let bg = bridge.resources.bind_groups.get(bg_id).ok_or_else(
@@ -479,9 +484,12 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                                     )?;
                                     if let Some(op) = ops.last_mut() {
                                         op.bind_groups.push((
-                                            *first_set + i as u32,
+                                            *first_slot + i as u32,
                                             bg as *const wgpu::BindGroup,
                                         ));
+                                        if i == 0 {
+                                            op.dynamic_offsets = dynamic_offsets.clone();
+                                        }
                                     }
                                 }
                             }
@@ -525,8 +533,16 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                                     op.first_instance = *first_instance;
                                 }
                             }
-                            Some(RhiCommand::PushConstants { .. }) => {}
-                            Some(_) => {}
+                            Some(RhiCommand::PushConstants { .. }) => {
+                                return Err(Error::unsupported(
+                                    "push constants are not implemented",
+                                ));
+                            }
+                            Some(_) => {
+                                return Err(Error::unsupported(
+                                    "command is not implemented inside a render pass",
+                                ));
+                            }
                             None => {
                                 return Err(Error::fatal(ErrorKind::Unsupported(
                                     "missing EndRenderPass command",
@@ -540,9 +556,14 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                         // which outlive the bundle encoder and this function.
                         let p = unsafe { &*op.pipeline };
                         bundle_encoder.set_pipeline(p);
-                        for (set, bg_ptr) in &op.bind_groups {
+                        for (group_index, (set, bg_ptr)) in op.bind_groups.iter().enumerate() {
                             let bg = unsafe { &**bg_ptr };
-                            bundle_encoder.set_bind_group(*set, bg, &[]);
+                            let offsets = if group_index == 0 {
+                                op.dynamic_offsets.as_slice()
+                            } else {
+                                &[]
+                            };
+                            bundle_encoder.set_bind_group(*set, bg, offsets);
                         }
                         if !op.vertex_buffer.is_null() {
                             let vb = unsafe { &*op.vertex_buffer };
@@ -563,7 +584,9 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                         label: Some("rotex-wgpu-bundle"),
                     });
                     bridge.render_bundle = Some(bundle);
-                    let cached = bridge.render_bundle.as_ref().unwrap();
+                    let cached = bridge.render_bundle.as_ref().ok_or_else(|| {
+                        Error::fatal(ErrorKind::Unsupported("render bundle missing after finish"))
+                    })?;
                     render_pass.execute_bundles(std::slice::from_ref(cached));
                 }
 
@@ -582,7 +605,7 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     }
                 }
             }
-            _ => {}
+            _ => return Err(Error::unsupported("command not implemented")),
         }
     }
 

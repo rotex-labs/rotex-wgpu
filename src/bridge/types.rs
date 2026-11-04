@@ -108,6 +108,9 @@ pub fn map_vertex_format(format: VertexFormat) -> wgpu::VertexFormat {
         VertexFormat::Float32x3 => wgpu::VertexFormat::Float32x3,
         VertexFormat::Float32x4 => wgpu::VertexFormat::Float32x4,
         VertexFormat::Uint32 => wgpu::VertexFormat::Uint32,
+        VertexFormat::Unorm8x4 => wgpu::VertexFormat::Unorm8x4,
+        VertexFormat::Float16x2 => wgpu::VertexFormat::Float16x2,
+        VertexFormat::Sint32 => wgpu::VertexFormat::Sint32,
     }
 }
 
@@ -123,16 +126,27 @@ pub fn wgpu_vertex_attribute(attribute: VertexAttribute) -> wgpu::VertexAttribut
     }
 }
 
-pub fn map_texture_format(format: TextureFormat) -> wgpu::TextureFormat {
-    match format {
+pub fn map_texture_format(format: TextureFormat) -> Option<wgpu::TextureFormat> {
+    Some(match format {
+        TextureFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
+        TextureFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
         TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-    }
+        TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::R32Float => wgpu::TextureFormat::R32Float,
+        TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        TextureFormat::Rgba32Float => wgpu::TextureFormat::Rgba32Float,
+        TextureFormat::Depth16Unorm => wgpu::TextureFormat::Depth16Unorm,
+        TextureFormat::Depth24Plus => wgpu::TextureFormat::Depth24Plus,
+        TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
+        TextureFormat::Depth24PlusStencil8 => wgpu::TextureFormat::Depth24PlusStencil8,
+        _ => return None,
+    })
 }
 
 pub fn bytes_per_pixel(format: TextureFormat) -> u32 {
-    match format {
-        TextureFormat::Rgba8Unorm => 4,
-    }
+    format.info().block_bytes
 }
 
 pub fn map_index_format(format: IndexFormat) -> wgpu::IndexFormat {

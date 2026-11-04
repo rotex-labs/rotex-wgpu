@@ -1,15 +1,16 @@
 [package]
 name = "rotex-wgpu"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "A wgpu backend for rotex"
 repository = "https://github.com/rotexengine/rotex-wgpu.git"
 
 [dependencies]
+async-trait = "0.1.89"
 raw-window-handle = "0.6"
-rotex-core = { version = "0.1.3" }
-rotex-types = { version = "0.1.2" }
+rotex-core = { version = "0.2.0" }
+rotex-types = { version = "0.2.0" }
 wgpu = { version = "29.0.3", features = ["spirv"] }
 
 [dev-dependencies]

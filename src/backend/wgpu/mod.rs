@@ -1,4 +1,4 @@
-mod device;
+pub(crate) mod device;
 mod surface;
 
 pub use device::{WgpuDevice, WgpuInstance};

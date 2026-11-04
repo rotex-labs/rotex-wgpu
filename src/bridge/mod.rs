@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 mod bindings;
 mod compute_pipeline_cache;
-mod init;
+pub(crate) mod init;
 mod render;
 mod resources;
 mod shader_cache;
@@ -16,9 +16,8 @@ use rotex_core::{
     Error as CoreError, ErrorKind as CoreErrorKind, GpuBackend, Severity as CoreSeverity,
 };
 use rotex_types::{
-    BufferId, ComputePipelineId, CreatedResources, DeviceDescriptor, Extent2D, InstanceDescriptor,
-    ResourceBatchCreate, ResourceBatchUpdate, RhiCommand, SurfaceDescriptor, TextureId,
-    TextureReadback,
+    BufferId, ComputePipelineId, CreatedResources, Extent2D, ResourceBatchCreate,
+    ResourceBatchUpdate, RhiCommand, SurfaceDescriptor, TextureId, TextureReadback,
 };
 
 use self::shader_cache::ShaderCacheKey;
@@ -48,13 +47,6 @@ pub struct WgpuBridge {
 }
 
 impl WgpuBridge {
-    pub async fn new(
-        instance_descriptor: InstanceDescriptor,
-        device_descriptor: DeviceDescriptor,
-    ) -> Result<Self, Error> {
-        init::create_bridge(instance_descriptor, device_descriptor).await
-    }
-
     pub fn attach_surface(&mut self, surface_descriptor: SurfaceDescriptor) -> Result<(), Error> {
         surface::attach_surface(self, surface_descriptor)
     }
@@ -91,11 +83,7 @@ impl WgpuBridge {
     pub fn destroy(self) {}
 
     pub fn unsupported_feature_reporting() -> &'static [&'static str] {
-        &[
-            "VertexFormat support is limited to the rotex_types subset (Float32/Float32x2/Float32x3/Float32x4/Uint32).",
-            "TextureFormat::Rgba8UnormSrgb is unavailable; textures use TextureFormat::Rgba8Unorm.",
-            "Advanced Vulkan SPIR-V operations (for example hardware ray tracing or subgroup operations) are unsupported by WGPU WebAPI and may panic/fail during make_spirv translation.",
-        ]
+        crate::caps::unsupported_feature_reporting()
     }
 }
 
@@ -119,6 +107,10 @@ fn to_core_error(error: Error) -> CoreError {
 }
 
 impl GpuBackend for WgpuBridge {
+    fn capabilities(&self) -> rotex_types::BackendCapabilities {
+        crate::caps::capabilities_for(crate::caps::limits_from_wgpu(&self.device.adapter.limits()))
+    }
+
     fn attach_surface(
         &mut self,
         surface_descriptor: rotex_types::SurfaceDescriptor,

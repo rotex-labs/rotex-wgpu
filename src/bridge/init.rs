@@ -1,19 +1,12 @@
 use std::collections::HashMap;
 
-use crate::backend::wgpu::WgpuInstance;
+use crate::backend::wgpu::{WgpuDevice, WgpuInstance};
 use crate::error::Error;
-use rotex_types::{DeviceDescriptor, InstanceDescriptor};
 
 use super::WgpuBridge;
 use super::types::ResourceStorage;
 
-pub(super) async fn create_bridge(
-    instance_descriptor: InstanceDescriptor,
-    device_descriptor: DeviceDescriptor,
-) -> Result<WgpuBridge, Error> {
-    let instance = WgpuInstance::new(&instance_descriptor).await?;
-    let device = instance.request_device(&device_descriptor).await?;
-
+pub(crate) fn init_bridge(instance: WgpuInstance, device: WgpuDevice) -> Result<WgpuBridge, Error> {
     Ok(WgpuBridge {
         instance,
         device,

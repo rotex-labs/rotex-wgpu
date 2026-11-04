@@ -1,11 +1,14 @@
 pub mod backend;
 pub mod bridge;
+mod caps;
 pub mod core;
 pub mod error;
+mod gpu_platform;
 
 pub use backend::wgpu;
 pub use bridge::WgpuBridge;
 pub use error::{Error, ErrorKind, Severity};
+pub use gpu_platform::WgpuGpuPlatform;
 
 pub mod rotex_types {
     pub use ::rotex_types::*;
@@ -13,28 +16,43 @@ pub mod rotex_types {
 
 #[cfg(test)]
 mod tests {
-    use super::WgpuBridge;
+    use super::WgpuGpuPlatform;
     use super::rotex_types::{
         AbstractPipelineLayout, CullMode, DeviceDescriptor, GraphicsShaderPackage, IndexFormat,
-        InstanceDescriptor, MaterialDescriptor, MeshDescriptor, ResourceBatchCreate,
+        MaterialDescriptor, MeshDescriptor, PlatformDescriptor, ResourceBatchCreate,
         ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
         ShaderPackage, ShaderPayload, ShaderStage, ShaderVariantMap, TextureDescriptor,
         TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     };
+    use rotex_core::{GpuPlatform, HardwareFamily};
 
     #[test]
     fn headless_resource_lifecycle_smoke() {
         pollster::block_on(async {
-            let mut bridge =
-                match WgpuBridge::new(InstanceDescriptor::default(), DeviceDescriptor::default())
-                    .await
-                {
-                    Ok(bridge) => bridge,
-                    Err(_) => {
-                        // Allow running tests on systems without a suitable graphics adapter.
-                        return;
-                    }
-                };
+            let gpu = match WgpuGpuPlatform::new(PlatformDescriptor::default()).await {
+                Ok(gpu) => gpu,
+                Err(_) => return,
+            };
+            let adapters = match gpu.enumerate_adapters().await {
+                Ok(adapters) => adapters,
+                Err(_) => return,
+            };
+            let adapter_id = adapters
+                .iter()
+                .find(|adapter| adapter.hardware_family == HardwareFamily::DiscreteGpu)
+                .or(adapters.first())
+                .map(|adapter| adapter.id);
+            let adapter_id = match adapter_id {
+                Some(id) => id,
+                None => return,
+            };
+            let mut bridge = match gpu
+                .create_backend(adapter_id, DeviceDescriptor::default())
+                .await
+            {
+                Ok(bridge) => bridge,
+                Err(_) => return,
+            };
 
             let resources = bridge
                 .create_resources(ResourceBatchCreate {
@@ -119,7 +137,11 @@ mod tests {
                     ResourceHandle::Buffer(_)
                     | ResourceHandle::ComputePipeline(_)
                     | ResourceHandle::BindGroupLayout(_)
-                    | ResourceHandle::BindGroup(_) => {}
+                    | ResourceHandle::BindGroup(_)
+                    | ResourceHandle::Sampler(_)
+                    | ResourceHandle::GraphicsPipeline(_)
+                    | ResourceHandle::QuerySet(_) => {}
+                    _ => {}
                 }
             }
 

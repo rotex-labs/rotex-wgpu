@@ -24,6 +24,7 @@ pub(super) fn create_resources(
         match resource {
             ResourceCreateDescriptor::Mesh { id, mesh } => {
                 let id = MeshId(id);
+                ensure_absent(&bridge.resources.meshes, &id)?;
                 bridge
                     .resources
                     .meshes
@@ -33,17 +34,20 @@ pub(super) fn create_resources(
             ResourceCreateDescriptor::Material { id, material } => {
                 validate_material_descriptor(&material)?;
                 let id = MaterialId(id);
+                ensure_absent(&bridge.resources.materials, &id)?;
                 bridge.resources.materials.insert(id, material);
                 handles.push(ResourceHandle::Material(id));
             }
             ResourceCreateDescriptor::Texture { id, texture } => {
                 let id = TextureId(id);
+                ensure_absent(&bridge.resources.textures, &id)?;
                 let gpu_texture = create_wgpu_texture(&bridge.device, texture)?;
                 bridge.resources.textures.insert(id, gpu_texture);
                 handles.push(ResourceHandle::Texture(id));
             }
             ResourceCreateDescriptor::Buffer { id, buffer: buf } => {
                 let id = BufferId(id);
+                ensure_absent(&bridge.resources.buffers, &id)?;
                 let usage = map_wgpu_buffer_usage(&buf);
                 let size = buf.size.max(1);
                 let buffer = bridge.device.raw.create_buffer(&wgpu::BufferDescriptor {
@@ -69,13 +73,15 @@ pub(super) fn create_resources(
             }
             ResourceCreateDescriptor::BindGroupLayout { id, layout } => {
                 let id = BindGroupLayoutId(id);
+                ensure_absent(&bridge.resources.bind_group_layouts, &id)?;
                 let wgpu_layout =
-                    super::bindings::create_bind_group_layout(&bridge.device.raw, &layout);
+                    super::bindings::create_bind_group_layout(&bridge.device.raw, &layout)?;
                 bridge.resources.bind_group_layouts.insert(id, wgpu_layout);
                 handles.push(ResourceHandle::BindGroupLayout(id));
             }
             ResourceCreateDescriptor::BindGroup { id, group: bg } => {
                 let id = BindGroupId(id);
+                ensure_absent(&bridge.resources.bind_groups, &id)?;
                 let layout =
                     bridge
                         .resources
@@ -105,7 +111,11 @@ pub(super) fn create_resources(
                                     size: if *size == 0 {
                                         None
                                     } else {
-                                        Some(std::num::NonZeroU64::new(*size).unwrap())
+                                        Some(std::num::NonZeroU64::new(*size).ok_or_else(|| {
+                                            Error::fatal(ErrorKind::Unsupported(
+                                                "buffer binding size is zero",
+                                            ))
+                                        })?)
                                     },
                                 }),
                             });
@@ -137,11 +147,13 @@ pub(super) fn create_resources(
             }
             ResourceCreateDescriptor::ComputePipeline { id, pipeline } => {
                 let id = ComputePipelineId(id);
+                ensure_absent(&bridge.resources.compute_pipelines, &id)?;
                 let result =
                     super::compute_pipeline_cache::create_compute_pipeline(bridge, &pipeline)?;
                 bridge.resources.compute_pipelines.insert(id, result);
                 handles.push(ResourceHandle::ComputePipeline(id));
             }
+            _ => return Err(Error::unsupported("resource create not implemented")),
         }
     }
     Ok(CreatedResources { handles })
@@ -193,6 +205,11 @@ pub(super) fn update_resources(
                     .rhi_pipeline_cache
                     .retain(|key, _| key.material_id != id);
             }
+            ResourceUpdateDescriptor::MeshVertices { .. }
+            | ResourceUpdateDescriptor::Buffer { .. } => {}
+            ResourceUpdateDescriptor::Destroy { handle } => {
+                destroy_resource(bridge, handle)?;
+            }
             ResourceUpdateDescriptor::Texture { id, data } => {
                 let texture =
                     bridge.resources.textures.get(&id).ok_or_else(|| {
@@ -207,10 +224,83 @@ pub(super) fn update_resources(
                     &data,
                 )?;
             }
-            _ => {}
+            _ => return Err(Error::unsupported("resource update not implemented")),
         }
     }
     Ok(())
+}
+
+fn destroy_resource(bridge: &mut WgpuBridge, handle: ResourceHandle) -> Result<(), Error> {
+    match handle {
+        ResourceHandle::Mesh(id) => {
+            bridge
+                .resources
+                .meshes
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("mesh not found"))?;
+        }
+        ResourceHandle::Texture(id) => {
+            bridge
+                .resources
+                .textures
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("texture not found"))?;
+        }
+        ResourceHandle::Material(id) => {
+            if bridge.resources.materials.remove(&id).is_none() {
+                return Err(Error::unsupported("material not found"));
+            }
+            bridge
+                .rhi_pipeline_cache
+                .retain(|key, _| key.material_id != id);
+        }
+        ResourceHandle::Buffer(id) => {
+            bridge
+                .resources
+                .buffers
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("buffer not found"))?;
+        }
+        ResourceHandle::ComputePipeline(id) => {
+            bridge
+                .resources
+                .compute_pipelines
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("compute pipeline not found"))?;
+        }
+        ResourceHandle::BindGroupLayout(id) => {
+            bridge
+                .resources
+                .bind_group_layouts
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("bind group layout not found"))?;
+        }
+        ResourceHandle::BindGroup(id) => {
+            bridge
+                .resources
+                .bind_groups
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("bind group not found"))?;
+        }
+        ResourceHandle::Sampler(_)
+        | ResourceHandle::GraphicsPipeline(_)
+        | ResourceHandle::QuerySet(_) => {
+            return Err(Error::unsupported("resource destroy not implemented"));
+        }
+        _ => return Err(Error::unsupported("resource destroy not implemented")),
+    }
+    Ok(())
+}
+
+fn ensure_absent<K, V>(map: &std::collections::HashMap<K, V>, key: &K) -> Result<(), Error>
+where
+    K: Eq + std::hash::Hash,
+{
+    if map.contains_key(key) {
+        Err(Error::unsupported("resource id already exists"))
+    } else {
+        Ok(())
+    }
 }
 
 fn create_wgpu_mesh(
@@ -305,7 +395,8 @@ fn create_wgpu_texture(
     device: &crate::backend::wgpu::WgpuDevice,
     texture: TextureDescriptor,
 ) -> Result<WgpuTextureResource, Error> {
-    let format = map_texture_format(texture.format);
+    let format = map_texture_format(texture.format)
+        .ok_or_else(|| Error::unsupported("texture format not implemented"))?;
     let width = texture.width.max(1);
     let height = texture.height.max(1);
     let raw_texture = device.raw.create_texture(&wgpu::TextureDescriptor {
@@ -456,6 +547,9 @@ fn vertex_format_tag(format: VertexFormat) -> u8 {
         VertexFormat::Float32x3 => 2,
         VertexFormat::Float32x4 => 3,
         VertexFormat::Uint32 => 4,
+        VertexFormat::Unorm8x4 => 5,
+        VertexFormat::Float16x2 => 6,
+        VertexFormat::Sint32 => 7,
     }
 }
 
@@ -466,7 +560,19 @@ fn validate_texture_upload(
     data: &[u8],
 ) -> Result<TextureUploadPlan, Error> {
     let mapped_format = match texture_format {
+        wgpu::TextureFormat::R8Unorm => TextureFormat::R8Unorm,
+        wgpu::TextureFormat::Rg8Unorm => TextureFormat::Rg8Unorm,
         wgpu::TextureFormat::Rgba8Unorm => TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bgra8Unorm => TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::R32Float => TextureFormat::R32Float,
+        wgpu::TextureFormat::Rgba16Float => TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::Rgba32Float => TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::Depth16Unorm => TextureFormat::Depth16Unorm,
+        wgpu::TextureFormat::Depth24Plus => TextureFormat::Depth24Plus,
+        wgpu::TextureFormat::Depth32Float => TextureFormat::Depth32Float,
+        wgpu::TextureFormat::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
         _ => {
             return Err(Error::recoverable(ErrorKind::Unsupported(
                 "texture_format_not_supported",

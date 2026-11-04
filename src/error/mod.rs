@@ -42,6 +42,10 @@ impl Error {
     pub const fn recoverable(kind: ErrorKind) -> Self {
         Self::new(kind, Severity::Recoverable)
     }
+
+    pub const fn unsupported(message: &'static str) -> Self {
+        Self::fatal(ErrorKind::Unsupported(message))
+    }
 }
 
 impl Display for Error {
