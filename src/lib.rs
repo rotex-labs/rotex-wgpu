@@ -10,6 +10,8 @@ pub use bridge::WgpuBridge;
 pub use error::{Error, ErrorKind, Severity};
 pub use gpu_platform::WgpuGpuPlatform;
 
+impl rotex_core::Supports<rotex_types::IndirectDraw> for WgpuBridge {}
+
 pub mod rotex_types {
     pub use ::rotex_types::*;
 }
@@ -25,6 +27,31 @@ mod tests {
         TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     };
     use rotex_core::{GpuPlatform, HardwareFamily};
+
+    #[test]
+    fn backend_matches_reported_capabilities() {
+        pollster::block_on(async {
+            let gpu = match WgpuGpuPlatform::new(PlatformDescriptor::default()).await {
+                Ok(gpu) => gpu,
+                Err(_) => return,
+            };
+            let adapters = match gpu.enumerate_adapters().await {
+                Ok(adapters) => adapters,
+                Err(_) => return,
+            };
+            let Some(adapter) = adapters.first() else {
+                return;
+            };
+            let mut backend = match gpu
+                .create_backend(adapter.id, DeviceDescriptor::default())
+                .await
+            {
+                Ok(backend) => backend,
+                Err(_) => return,
+            };
+            rotex_conformance::run(&mut backend).expect("conformance");
+        });
+    }
 
     #[test]
     fn headless_resource_lifecycle_smoke() {

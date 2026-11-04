@@ -52,7 +52,7 @@ pub(crate) fn capabilities_for(device: &wgpu::Device) -> BackendCapabilities {
     BackendCapabilities {
         core,
         limits: limits_from_wgpu(&device.limits()),
-        extensions: FeatureSet::empty(),
+        extensions: FeatureSet::INDIRECT_DRAW,
     }
 }
 

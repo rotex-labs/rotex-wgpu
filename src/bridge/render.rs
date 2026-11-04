@@ -681,6 +681,7 @@ fn remaining_needs_direct<'a>(commands: impl Iterator<Item = &'a RhiCommand>) ->
             RhiCommand::SetViewport { .. }
             | RhiCommand::SetScissor { .. }
             | RhiCommand::Draw { .. }
+            | RhiCommand::Extension { .. }
             | RhiCommand::SetGraphicsPipeline { .. }
             | RhiCommand::BindVertexBuffer { .. }
             | RhiCommand::BindIndexBuffer { .. }
@@ -787,6 +788,31 @@ fn record_direct_pass<'a>(
                     *first_vertex..(*first_vertex + *vertex_count),
                     *first_instance..(*first_instance + *instance_count),
                 );
+            }
+            Some(RhiCommand::Extension {
+                feature,
+                opcode,
+                payload,
+            }) => {
+                use rotex_core::Feature;
+                use rotex_types::IndirectDraw;
+                if *feature != IndirectDraw::ID || *opcode != 1 || payload.len() < 16 {
+                    return Err(Error::unsupported("extension command is not implemented"));
+                }
+                let mut buffer_bytes = [0u8; 8];
+                let mut offset_bytes = [0u8; 8];
+                buffer_bytes.copy_from_slice(&payload[0..8]);
+                offset_bytes.copy_from_slice(&payload[8..16]);
+                let buffer_id = rotex_types::BufferId(u64::from_le_bytes(buffer_bytes));
+                let offset = u64::from_le_bytes(offset_bytes);
+                let buffer = bridge
+                    .resources
+                    .buffers
+                    .get(&buffer_id)
+                    .ok_or_else(|| Error::unsupported("indirect buffer not found"))?
+                    .buffer
+                    .clone();
+                pass.draw_indexed_indirect(&buffer, offset);
             }
             Some(RhiCommand::SetViewport {
                 x,

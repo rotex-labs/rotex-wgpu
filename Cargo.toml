@@ -15,3 +15,4 @@ wgpu = { version = "29.0.3", features = ["spirv"] }
 
 [dev-dependencies]
 pollster = "0.4.0"
+rotex-conformance = { version = "0.2.0" }

@@ -88,6 +88,9 @@ pub(crate) async fn request_device_from_adapter(
     if available.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
         requested_features.insert(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
     }
+    if available.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+        requested_features.insert(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+    }
     if !adapter.features().contains(requested_features) {
         return Err(Error::recoverable(ErrorKind::Unsupported(
             "required_device_features_unavailable",
@@ -142,7 +145,7 @@ pub(crate) fn adapter_info(adapter: &wgpu::Adapter, id: AdapterId) -> AdapterInf
             },
             available_features: map_available_features(features),
             limits: caps::limits_from_wgpu(&adapter.limits()),
-            extensions: FeatureSet::empty(),
+            extensions: FeatureSet::INDIRECT_DRAW,
             core: CAPS,
         },
     }
