@@ -1,0 +1,6 @@
+# Shared by every crate and the workspace. Parser edition stays in Cargo.toml.
+style_edition = "2024"
+newline_style = "Unix"
+reorder_imports = true
+use_field_init_shorthand = true
+use_try_shorthand = true

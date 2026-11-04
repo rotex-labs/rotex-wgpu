@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: release-pr opens a version bump pull request. release publishes the current version.
+        type: choice
+        options:
+          - release-pr
+          - release
+        default: release-pr
+
+permissions: {}
+
+concurrency:
+  group: release-plz-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    if: github.repository_owner == 'rotex-labs'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: release-plz/action@v0.5
+        with:
+          command: ${{ inputs.command }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
