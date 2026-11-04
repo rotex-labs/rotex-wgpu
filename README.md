@@ -1,0 +1,33 @@
+# rotex-wgpu
+
+Stateless wgpu translator, including headless use.
+
+> [!WARNING]
+> **Beta, pre-1.0.** Rotex is under active development. APIs, behavior, and crate
+> boundaries can change in any 0.x release. Do not depend on it for production work yet.
+
+## Overview
+
+`rotex-wgpu` implements the same `GpuBackend` command surface as the other backends, through wgpu. It translates commands. It does not own scene state.
+
+## Responsibilities
+
+- `WgpuGpuPlatform` and `WgpuBridge`
+- Handle maps and pipeline compilation
+- Indexed indirect draw when the device can record it
+
+## Dependencies
+
+`rotex-core` and `rotex-types`. Tests use `rotex-conformance`.
+
+## Status
+
+Version 0.2.0. Barriers are emulated: the command is accepted and wgpu inserts its own hazards. Push constants are native only when the device supports immediates.
+
+## Part of Rotex
+
+Rotex is a graphics HAL workspace. See [rotex-dev](https://github.com/rotex-labs/rotex-dev) for the architecture and the other crates.
+
+## License
+
+Licensed under [MIT](LICENSE).
