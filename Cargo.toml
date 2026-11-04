@@ -2,7 +2,7 @@
 name = "rotex-wgpu"
 version = "0.2.0"
 edition = "2024"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "A wgpu backend for rotex"
 repository = "https://github.com/rotexengine/rotex-wgpu.git"
 
