@@ -97,8 +97,10 @@ pub(crate) async fn request_device_from_adapter(
         )));
     }
 
-    let mut wgpu_descriptor = WgpuDeviceDescriptor::default();
-    wgpu_descriptor.required_features = requested_features;
+    let wgpu_descriptor = WgpuDeviceDescriptor {
+        required_features: requested_features,
+        ..Default::default()
+    };
     let (raw, queue) = adapter
         .request_device(&wgpu_descriptor)
         .await

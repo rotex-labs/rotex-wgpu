@@ -15,7 +15,7 @@ pub(super) fn create_compute_pipeline(
             "compute_shader_bytes_missing",
         )));
     }
-    if descriptor.shader_spv.len() % 4 != 0 {
+    if !descriptor.shader_spv.len().is_multiple_of(4) {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "compute_shader_bytes_not_word_aligned",
         )));

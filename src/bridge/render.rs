@@ -296,33 +296,33 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                     ))
                 })?;
 
-                let color_view;
-                let surface_format;
-                match &pass.color_target {
+                let (color_view, surface_format) = match &pass.color_target {
                     PassColorTarget::Presentation => {
                         let surface_texture = bridge.surface_texture.as_ref().ok_or_else(|| {
                             Error::fatal(ErrorKind::Unsupported(
                                 "no surface texture (call AcquirePresentationTarget first)",
                             ))
                         })?;
-                        color_view = surface_texture
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor::default());
-                        surface_format = bridge
+                        let format = bridge
                             .swapchain
                             .as_ref()
                             .ok_or_else(super::surface_not_attached_error)?
                             .config
                             .format;
+                        (
+                            surface_texture
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default()),
+                            format,
+                        )
                     }
                     PassColorTarget::Texture(id) => {
                         let texture = bridge.resources.textures.get(id).ok_or_else(|| {
                             Error::fatal(ErrorKind::Unsupported("render target texture not found"))
                         })?;
-                        color_view = texture.default_view.clone();
-                        surface_format = texture.format;
+                        (texture.default_view.clone(), texture.format)
                     }
-                }
+                };
 
                 let load_color = match pass.color_load {
                     ColorAttachmentLoad::Clear => wgpu::LoadOp::Clear(clear_color_for_surface(
@@ -661,10 +661,8 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                 if let Some(encoder) = bridge.recording_encoder.take() {
                     bridge.device.queue.submit(Some(encoder.finish()));
                 }
-                if *present {
-                    if let Some(surface_texture) = bridge.surface_texture.take() {
-                        surface_texture.present();
-                    }
+                if *present && let Some(surface_texture) = bridge.surface_texture.take() {
+                    surface_texture.present();
                 }
             }
             _ => return Err(Error::unsupported("command not implemented")),
@@ -701,10 +699,10 @@ fn occlusion_query_for_pass<'a>(
         match command {
             RhiCommand::EndRenderPass => return None,
             RhiCommand::WriteTimestamp { query_set, .. } => {
-                if let Some(resource) = bridge.resources.query_sets.get(query_set) {
-                    if resource.ty == rotex_types::QueryType::Occlusion {
-                        return Some(resource.query_set.clone());
-                    }
+                if let Some(resource) = bridge.resources.query_sets.get(query_set)
+                    && resource.ty == rotex_types::QueryType::Occlusion
+                {
+                    return Some(resource.query_set.clone());
                 }
             }
             _ => {}

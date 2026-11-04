@@ -248,10 +248,10 @@ pub(super) fn update_resources(
                     material.enable_depth = depth;
                 }
                 if let Some(texture_update) = texture {
-                    if let Some(texture_id) = texture_update {
-                        if !bridge.resources.textures.contains_key(&texture_id) {
-                            return Err(Error::recoverable(ErrorKind::ResourceNotFound("texture")));
-                        }
+                    if let Some(texture_id) = texture_update
+                        && !bridge.resources.textures.contains_key(&texture_id)
+                    {
+                        return Err(Error::recoverable(ErrorKind::ResourceNotFound("texture")));
                     }
                     material.texture = texture_update;
                 }
