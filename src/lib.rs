@@ -1,7 +1,24 @@
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+
+//! wgpu backend for explicit command lists, including headless runs.
+//!
+//! [`WgpuGpuPlatform`] enumerates adapters and [`WgpuBridge`] translates
+//! [`rotex_types::RhiCommand`] values through wgpu. The bridge keeps handle
+//! tables and compiles pipelines from the shader packages the caller supplies.
+//! It does not own scene state.
+//!
+//! Memory barriers are accepted; wgpu inserts its own hazards. Push constants
+//! are recorded when the device supports immediates.
+
+/// Device and surface wrappers.
 pub mod backend;
+/// Command translation and GPU resource tables.
 pub mod bridge;
 mod caps;
+/// Re-exported RHI vocabulary.
 pub mod core;
+/// Errors returned by the wgpu backend.
 pub mod error;
 mod gpu_platform;
 
@@ -12,6 +29,7 @@ pub use gpu_platform::WgpuGpuPlatform;
 
 impl rotex_core::Supports<rotex_types::IndirectDraw> for WgpuBridge {}
 
+/// Shared RHI vocabulary.
 pub mod rotex_types {
     pub use ::rotex_types::*;
 }

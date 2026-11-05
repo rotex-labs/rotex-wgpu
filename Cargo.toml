@@ -4,7 +4,11 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A wgpu backend for rotex"
+documentation = "https://docs.rs/rotex-wgpu"
 repository = "https://github.com/rotex-labs/rotex-wgpu"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 async-trait = "0.1.89"
