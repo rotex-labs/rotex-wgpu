@@ -25,9 +25,7 @@ impl GpuPlatform for WgpuGpuPlatform {
     type Backend = WgpuBridge;
 
     async fn new(platform_descriptor: PlatformDescriptor) -> Result<Self, CoreError> {
-        let instance = create_wgpu_instance(&platform_descriptor)
-            .await
-            .map_err(to_core_error)?;
+        let instance = create_wgpu_instance(&platform_descriptor).map_err(to_core_error)?;
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         Ok(Self { instance, adapters })
     }

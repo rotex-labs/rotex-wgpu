@@ -2,6 +2,7 @@
 mod bindings;
 mod compute_pipeline_cache;
 mod extended;
+mod immediate_uniform;
 pub(crate) mod init;
 mod render;
 mod resources;
@@ -45,10 +46,15 @@ pub struct WgpuBridge {
     pub(crate) active_pass: Option<render::ActiveGraphicsPass>,
     pub(crate) render_bundle: Option<wgpu::RenderBundle>,
     pub(crate) pending_acquire_skips: u32,
-    pre_present_hook: Option<fn()>,
     pub(crate) compute_pass_open: bool,
     pub(crate) active_compute_pipeline: Option<ComputePipelineId>,
     pub(crate) compute_binds: Vec<(u32, rotex_types::BindGroupId, Vec<u32>)>,
+    pub(crate) compute_immediates: Option<(u32, Vec<u8>)>,
+    pub(crate) fallback_sampler: wgpu::Sampler,
+    pub(crate) immediate_uniform: Option<immediate_uniform::ImmediateUniform>,
+    /// Graphics pipelines whose push constants were lowered to a group-1 uniform.
+    /// The value is true when group 0 is an empty layout inserted for that pipeline.
+    pub(crate) uniform_graphics: HashMap<rotex_types::GraphicsPipelineId, bool>,
 }
 
 impl WgpuBridge {
@@ -73,11 +79,6 @@ impl WgpuBridge {
     /// Records `commands` and submits a frame when the list asks for it.
     pub fn execute(&mut self, commands: &[RhiCommand]) -> Result<(), Error> {
         render::execute(self, commands)
-    }
-
-    /// Stores an optional callback associated with presentation.
-    pub fn set_pre_present_hook(&mut self, hook: Option<fn()>) {
-        self.pre_present_hook = hook;
     }
 
     /// Reconfigures the swapchain at `extent`.

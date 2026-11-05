@@ -118,6 +118,8 @@ pub struct WgpuComputePipelineResource {
     pub pipeline: wgpu::ComputePipeline,
     /// Layouts for the pipeline bind groups, in set order.
     pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
+    /// Push constants were rewritten to the group-1 uniform.
+    pub uniform_immediate: bool,
 }
 
 /// Compiled graphics pipeline.
@@ -150,6 +152,8 @@ pub struct ResourceStorage {
     pub buffers: HashMap<rotex_types::BufferId, crate::backend::wgpu::WgpuBuffer>,
     /// Bind-group layouts.
     pub bind_group_layouts: HashMap<rotex_types::BindGroupLayoutId, wgpu::BindGroupLayout>,
+    /// Sampler bindings in each layout. Missing group entries use the fallback sampler.
+    pub layout_sampler_bindings: HashMap<rotex_types::BindGroupLayoutId, Vec<u32>>,
     /// Bind groups.
     pub bind_groups: HashMap<rotex_types::BindGroupId, wgpu::BindGroup>,
     /// Samplers.
@@ -158,6 +162,8 @@ pub struct ResourceStorage {
     pub graphics_pipelines: HashMap<rotex_types::GraphicsPipelineId, wgpu::RenderPipeline>,
     /// Query sets.
     pub query_sets: HashMap<rotex_types::QuerySetId, WgpuQuerySet>,
+    /// Shader artifacts loaded for their WGSL payload.
+    pub shaders: HashMap<rotex_types::ShaderId, rotex_types::ShaderArtifact>,
 }
 
 /// Maps an RHI vertex format to wgpu.

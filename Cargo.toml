@@ -13,10 +13,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 async-trait = "0.1.89"
 raw-window-handle = "0.6"
-rotex-core = { version = "0.2.0" }
-rotex-types = { version = "0.2.0" }
+rotex-core = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "588c843b8b2e2f45895882c90f762b669c925c09" }
+rotex-types = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "588c843b8b2e2f45895882c90f762b669c925c09" }
 wgpu = { version = "29.0.3", features = ["spirv"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "29.0.3", features = ["fragile-send-sync-non-atomic-wasm"] }
 
 [dev-dependencies]
 pollster = "0.4.0"
-rotex-conformance = { version = "0.2.0" }
+rotex-conformance = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "588c843b8b2e2f45895882c90f762b669c925c09" }

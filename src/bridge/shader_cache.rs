@@ -1,3 +1,5 @@
+use std::hash::{Hash, Hasher};
+
 use rotex_types::shader::{ShaderPackage, ShaderPayload};
 
 use crate::error::{Error, ErrorKind};
@@ -10,51 +12,40 @@ pub(super) fn get_or_create_shader_module(
     label: &'static str,
     package: &ShaderPackage,
 ) -> Result<wgpu::ShaderModule, Error> {
-    let key = ShaderCacheKey(package.payload_hash());
+    let ShaderPayload::Wgsl(source) = package.variants.wgsl.as_ref().ok_or_else(|| {
+        Error::fatal(ErrorKind::Unsupported(
+            "wgpu requires a WGSL shader payload",
+        ))
+    })?
+    else {
+        return Err(Error::fatal(ErrorKind::Unsupported(
+            "wgpu requires a WGSL shader payload",
+        )));
+    };
+    let uniform = super::immediate_uniform::needed(&bridge.device.raw, source);
+    // Vertex and fragment packages from one artifact share `source_hash`.
+    // Key the module on the stage source so the fragment lookup cannot
+    // return the vertex module.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    package.stage.hash(&mut hasher);
+    package.entry_point.hash(&mut hasher);
+    source.hash(&mut hasher);
+    uniform.hash(&mut hasher);
+    let key = ShaderCacheKey(hasher.finish());
 
     if let Some(module) = bridge.shader_module_cache.get(&key) {
         return Ok(module.clone());
     }
 
-    let payload = package
-        .variants
-        .wgsl
-        .as_ref()
-        .or(package.variants.spirv.as_ref())
-        .ok_or_else(|| {
-            Error::recoverable(ErrorKind::InvalidDescriptor("shader_variant_missing"))
-        })?;
-
-    let module = match payload {
-        ShaderPayload::Wgsl(source) => {
-            bridge
-                .device
-                .raw
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some(label),
-                    source: wgpu::ShaderSource::Wgsl(source.clone().into()),
-                })
-        }
-        ShaderPayload::SpirV(bytes) => {
-            if bytes.len() % 4 != 0 {
-                return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-                    "shader_bytes_not_word_aligned",
-                )));
-            }
-            bridge
-                .device
-                .raw
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some(label),
-                    source: wgpu::util::make_spirv(bytes),
-                })
-        }
-        _ => {
-            return Err(Error::fatal(ErrorKind::Unsupported(
-                "unsupported_shader_payload_for_wgpu",
-            )));
-        }
-    };
+    let module = bridge
+        .device
+        .raw
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(
+                super::immediate_uniform::prepare_source(source, uniform).into(),
+            ),
+        });
 
     bridge.shader_module_cache.insert(key, module.clone());
     Ok(module)

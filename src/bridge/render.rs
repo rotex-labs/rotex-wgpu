@@ -260,6 +260,9 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
                         });
                 bridge.recording_encoder = Some(encoder);
                 bridge.active_pass = None;
+                if let Some(uniform) = bridge.immediate_uniform.as_mut() {
+                    uniform.begin_frame(bridge.current_frame_index);
+                }
             }
             RhiCommand::AcquirePresentationTarget => {
                 let surface_texture = surface::acquire_surface_texture(bridge)?;
@@ -557,11 +560,16 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
             RhiCommand::BeginComputePass { .. } => {
                 bridge.compute_pass_open = true;
                 bridge.compute_binds.clear();
+                bridge.compute_immediates = None;
             }
             RhiCommand::EndComputePass => {
                 bridge.compute_pass_open = false;
                 bridge.active_compute_pipeline = None;
                 bridge.compute_binds.clear();
+                bridge.compute_immediates = None;
+            }
+            RhiCommand::PushConstants { offset, data, .. } if bridge.compute_pass_open => {
+                bridge.compute_immediates = Some((*offset, data.clone()));
             }
             RhiCommand::SetComputePipeline { pipeline } => {
                 bridge.active_compute_pipeline = Some(*pipeline);
@@ -659,6 +667,9 @@ pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Resul
             }
             RhiCommand::SubmitFrame { present } => {
                 if let Some(encoder) = bridge.recording_encoder.take() {
+                    if let Some(uniform) = bridge.immediate_uniform.as_ref() {
+                        uniform.flush(&bridge.device.queue);
+                    }
                     bridge.device.queue.submit(Some(encoder.finish()));
                 }
                 if *present && let Some(surface_texture) = bridge.surface_texture.take() {
@@ -716,6 +727,7 @@ fn record_direct_pass<'a>(
     bridge: &mut WgpuBridge,
     commands: &mut impl Iterator<Item = &'a RhiCommand>,
 ) -> Result<(), Error> {
+    let mut uniform_graphics: Option<bool> = None;
     loop {
         match commands.next() {
             Some(RhiCommand::EndRenderPass) => return Ok(()),
@@ -831,6 +843,7 @@ fn record_direct_pass<'a>(
                 pass.set_scissor_rect(*x, *y, *width, *height);
             }
             Some(RhiCommand::SetGraphicsPipeline { pipeline }) => {
+                uniform_graphics = bridge.uniform_graphics.get(pipeline).copied();
                 let pipeline = bridge
                     .resources
                     .graphics_pipelines
@@ -871,15 +884,31 @@ fn record_direct_pass<'a>(
                 );
             }
             Some(RhiCommand::PushConstants { offset, data, .. }) => {
-                if !bridge
+                if bridge
                     .device
                     .raw
                     .features()
                     .contains(wgpu::Features::IMMEDIATES)
                 {
+                    pass.set_immediates(*offset, data);
+                } else if let Some(empty_group0) = uniform_graphics {
+                    let device = bridge.device.raw.clone();
+                    let frame_index = bridge.current_frame_index;
+                    let bound = super::immediate_uniform::bind_on(
+                        &mut bridge.immediate_uniform,
+                        &device,
+                        frame_index,
+                        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        data,
+                        empty_group0,
+                    )?;
+                    if let Some(empty) = bound.empty_group0 {
+                        pass.set_bind_group(0, &empty, &[]);
+                    }
+                    pass.set_bind_group(1, &bound.group, &[bound.offset]);
+                } else {
                     return Err(Error::unsupported("push constants are unavailable"));
                 }
-                pass.set_immediates(*offset, data);
             }
             Some(RhiCommand::WriteTimestamp { query_set, index }) => {
                 let resource = bridge
@@ -921,10 +950,19 @@ fn record_direct_pass<'a>(
     }
 }
 
+fn shader_uses_uniform(bridge: &WgpuBridge, package: &rotex_types::ShaderPackage) -> bool {
+    match &package.variants.wgsl {
+        Some(rotex_types::shader::ShaderPayload::Wgsl(source)) => {
+            super::immediate_uniform::needed(&bridge.device.raw, source)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn create_explicit_pipeline(
     bridge: &mut WgpuBridge,
     descriptor: &rotex_types::GraphicsPipelineDescriptor,
-) -> Result<wgpu::RenderPipeline, Error> {
+) -> Result<(wgpu::RenderPipeline, Option<bool>), Error> {
     let vertex_shader = shader_cache::get_or_create_shader_module(
         bridge,
         "rotex-wgpu-explicit-vertex",
@@ -935,13 +973,27 @@ pub(super) fn create_explicit_pipeline(
         "rotex-wgpu-explicit-fragment",
         &descriptor.shaders.fragment,
     )?;
-    let layouts = bindings::build_set_layouts_from_abstract_layout(
+    let mut layouts = bindings::build_set_layouts_from_abstract_layout(
         &bridge.device.raw,
         &descriptor.shaders.layout,
     )?;
+    let uniform_immediate = shader_uses_uniform(bridge, &descriptor.shaders.vertex)
+        || shader_uses_uniform(bridge, &descriptor.shaders.fragment);
+    let empty_group0 = if uniform_immediate {
+        super::immediate_uniform::append_group(
+            &bridge.device.raw,
+            &mut layouts,
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        )
+    } else {
+        false
+    };
     let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
-    let immediate_size =
-        super::extended::immediate_size(&bridge.device.raw, &descriptor.shaders.layout);
+    let immediate_size = if uniform_immediate {
+        0
+    } else {
+        super::extended::immediate_size(&bridge.device.raw, &descriptor.shaders.layout)
+    };
     let pipeline_layout =
         bridge
             .device
@@ -975,10 +1027,22 @@ pub(super) fn create_explicit_pipeline(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
-    let blend = if descriptor.blend.enabled {
-        Some(wgpu::BlendState::ALPHA_BLENDING)
-    } else {
-        Some(wgpu::BlendState::REPLACE)
+    let blend = match (descriptor.blend.mode, descriptor.blend.enabled) {
+        (rotex_types::BlendMode::Additive, _) => Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        }),
+        (rotex_types::BlendMode::Alpha, _) => Some(wgpu::BlendState::ALPHA_BLENDING),
+        (rotex_types::BlendMode::Replace, true) => Some(wgpu::BlendState::ALPHA_BLENDING),
+        (rotex_types::BlendMode::Replace, false) => Some(wgpu::BlendState::REPLACE),
     };
     let color_targets: Vec<Option<wgpu::ColorTargetState>> = targets
         .iter()
@@ -1001,46 +1065,49 @@ pub(super) fn create_explicit_pipeline(
         rotex_types::PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
         rotex_types::PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
     };
-    Ok(bridge
-        .device
-        .raw
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rotex-wgpu-explicit-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vertex_shader,
-                entry_point: Some(descriptor.shaders.vertex.entry_point.as_str()),
-                buffers: &vertex_buffers,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: if descriptor.depth_enabled {
-                Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24Plus,
-                    depth_write_enabled: Some(descriptor.depth_write),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                })
-            } else {
-                None
-            },
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fragment_shader,
-                entry_point: Some(descriptor.shaders.fragment.entry_point.as_str()),
-                targets: &color_targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+    Ok((
+        bridge
+            .device
+            .raw
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rotex-wgpu-explicit-pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vertex_shader,
+                    entry_point: Some(descriptor.shaders.vertex.entry_point.as_str()),
+                    buffers: &vertex_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: if descriptor.depth_enabled {
+                    Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth24Plus,
+                        depth_write_enabled: Some(descriptor.depth_write),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    })
+                } else {
+                    None
+                },
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &fragment_shader,
+                    entry_point: Some(descriptor.shaders.fragment.entry_point.as_str()),
+                    targets: &color_targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
             }),
-            multiview_mask: None,
-            cache: None,
-        }))
+        uniform_immediate.then_some(empty_group0),
+    ))
 }

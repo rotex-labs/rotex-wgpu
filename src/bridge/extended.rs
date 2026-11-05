@@ -245,13 +245,14 @@ pub(super) fn dispatch_compute(bridge: &mut WgpuBridge, groups: [u32; 3]) -> Res
     let pipeline_id = bridge
         .active_compute_pipeline
         .ok_or_else(|| Error::unsupported("no compute pipeline bound"))?;
-    let pipeline = bridge
-        .resources
-        .compute_pipelines
-        .get(&pipeline_id)
-        .ok_or_else(|| Error::unsupported("compute pipeline not found"))?
-        .pipeline
-        .clone();
+    let (pipeline, uniform_immediate) = {
+        let resource = bridge
+            .resources
+            .compute_pipelines
+            .get(&pipeline_id)
+            .ok_or_else(|| Error::unsupported("compute pipeline not found"))?;
+        (resource.pipeline.clone(), resource.uniform_immediate)
+    };
     let mut bind_groups = Vec::with_capacity(bridge.compute_binds.len());
     for (slot, id, offsets) in &bridge.compute_binds {
         let group = bridge
@@ -271,6 +272,23 @@ pub(super) fn dispatch_compute(bridge: &mut WgpuBridge, groups: [u32; 3]) -> Res
         pass.set_pipeline(&pipeline);
         for (slot, group, offsets) in &bind_groups {
             pass.set_bind_group(*slot, group, offsets);
+        }
+        if uniform_immediate {
+            if let Some((_, data)) = bridge.compute_immediates.clone() {
+                let device = bridge.device.raw.clone();
+                let frame_index = bridge.current_frame_index;
+                let bound = super::immediate_uniform::bind_on(
+                    &mut bridge.immediate_uniform,
+                    &device,
+                    frame_index,
+                    wgpu::ShaderStages::COMPUTE,
+                    &data,
+                    false,
+                )?;
+                pass.set_bind_group(1, &bound.group, &[bound.offset]);
+            }
+        } else if let Some((offset, data)) = &bridge.compute_immediates {
+            pass.set_immediates(*offset, data);
         }
         pass.dispatch_workgroups(groups[0], groups[1], groups[2]);
     }

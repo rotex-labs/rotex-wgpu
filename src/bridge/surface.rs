@@ -13,6 +13,7 @@ pub(super) fn attach_surface(
     )?;
     let extent = surface_descriptor.extent.clamped();
     let swapchain = surface.create_swapchain(&bridge.device, extent.width, extent.height)?;
+    bridge.swapchain_format = Some(swapchain.config.format);
     bridge.surface = Some(surface);
     bridge.swapchain = Some(swapchain);
     bridge.rhi_pipeline_cache.clear();
@@ -61,6 +62,7 @@ fn reconfigure_surface(bridge: &mut WgpuBridge, extent: Extent2D) -> Result<(), 
         .as_ref()
         .ok_or_else(surface_not_attached_error)?;
     let swapchain = surface.create_swapchain(&bridge.device, extent.width, extent.height)?;
+    bridge.swapchain_format = Some(swapchain.config.format);
     bridge.swapchain = Some(swapchain);
     bridge.depth_target = None;
     bridge.rhi_pipeline_cache.clear();

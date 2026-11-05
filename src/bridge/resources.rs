@@ -76,7 +76,17 @@ pub(super) fn create_resources(
                 ensure_absent(&bridge.resources.bind_group_layouts, &id)?;
                 let wgpu_layout =
                     super::bindings::create_bind_group_layout(&bridge.device.raw, &layout)?;
+                let sampler_bindings = layout
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.ty == rotex_types::BindingType::Sampler)
+                    .map(|entry| entry.binding)
+                    .collect();
                 bridge.resources.bind_group_layouts.insert(id, wgpu_layout);
+                bridge
+                    .resources
+                    .layout_sampler_bindings
+                    .insert(id, sampler_bindings);
                 handles.push(ResourceHandle::BindGroupLayout(id));
             }
             ResourceCreateDescriptor::BindGroup { id, group: bg } => {
@@ -90,7 +100,14 @@ pub(super) fn create_resources(
                         .ok_or(Error::fatal(ErrorKind::Unsupported(
                             "bind group layout not found",
                         )))?;
+                let sampler_bindings = bridge
+                    .resources
+                    .layout_sampler_bindings
+                    .get(&bg.layout)
+                    .cloned()
+                    .unwrap_or_default();
                 let mut entries = Vec::new();
+                let mut written_bindings = Vec::new();
                 for entry in &bg.entries {
                     match entry {
                         BindGroupEntryDescriptor::Buffer {
@@ -99,6 +116,7 @@ pub(super) fn create_resources(
                             offset,
                             size,
                         } => {
+                            written_bindings.push(*binding);
                             let buf_res =
                                 bridge.resources.buffers.get(buffer).ok_or(Error::fatal(
                                     ErrorKind::Unsupported("buffer not found"),
@@ -121,6 +139,7 @@ pub(super) fn create_resources(
                             });
                         }
                         BindGroupEntryDescriptor::Texture { binding, texture } => {
+                            written_bindings.push(*binding);
                             let tex_res =
                                 bridge.resources.textures.get(texture).ok_or_else(|| {
                                     Error::fatal(ErrorKind::Unsupported(
@@ -133,6 +152,15 @@ pub(super) fn create_resources(
                             });
                         }
                     }
+                }
+                for binding in sampler_bindings {
+                    if written_bindings.contains(&binding) {
+                        continue;
+                    }
+                    entries.push(wgpu::BindGroupEntry {
+                        binding,
+                        resource: wgpu::BindingResource::Sampler(&bridge.fallback_sampler),
+                    });
                 }
                 let wgpu_bg = bridge
                     .device
@@ -171,7 +199,11 @@ pub(super) fn create_resources(
             ResourceCreateDescriptor::GraphicsPipeline { id, pipeline } => {
                 let id = rotex_types::GraphicsPipelineId(id);
                 ensure_absent(&bridge.resources.graphics_pipelines, &id)?;
-                let created = super::render::create_explicit_pipeline(bridge, &pipeline)?;
+                let (created, uniform) =
+                    super::render::create_explicit_pipeline(bridge, &pipeline)?;
+                if let Some(empty_group0) = uniform {
+                    bridge.uniform_graphics.insert(id, empty_group0);
+                }
                 bridge.resources.graphics_pipelines.insert(id, created);
                 handles.push(ResourceHandle::GraphicsPipeline(id));
             }
@@ -206,6 +238,18 @@ pub(super) fn create_resources(
                     },
                 );
                 handles.push(ResourceHandle::QuerySet(id));
+            }
+            ResourceCreateDescriptor::Shader { id, artifact } => {
+                let id = rotex_types::ShaderId(id);
+                ensure_absent(&bridge.resources.shaders, &id)?;
+                if artifact.payload(rotex_types::TargetId::Wgsl).is_none() {
+                    return Err(Error::unsupported("shader artifact has no WGSL payload"));
+                }
+                if let Some(cap) = artifact.unmet_capability(&["compute", "storage_buffer"]) {
+                    return Err(Error::unsupported(static_capability(cap)));
+                }
+                bridge.resources.shaders.insert(id, artifact);
+                handles.push(ResourceHandle::Shader(id));
             }
             _ => return Err(Error::unsupported("resource create not implemented")),
         }
@@ -357,9 +401,24 @@ fn destroy_resource(bridge: &mut WgpuBridge, handle: ResourceHandle) -> Result<(
                 .remove(&id)
                 .ok_or_else(|| Error::unsupported("query set not found"))?;
         }
+        ResourceHandle::Shader(id) => {
+            bridge
+                .resources
+                .shaders
+                .remove(&id)
+                .ok_or_else(|| Error::unsupported("shader not found"))?;
+        }
         _ => return Err(Error::unsupported("resource destroy not implemented")),
     }
     Ok(())
+}
+
+fn static_capability(cap: &str) -> &'static str {
+    match cap {
+        "compute" => "shader requires compute",
+        "storage_buffer" => "shader requires storage buffers",
+        _ => "shader requires an unsupported capability",
+    }
 }
 
 fn ensure_absent<K, V>(map: &std::collections::HashMap<K, V>, key: &K) -> Result<(), Error>

@@ -10,12 +10,12 @@ pub(super) fn create_compute_pipeline(
     bridge: &WgpuBridge,
     descriptor: &ComputePipelineDescriptor,
 ) -> Result<WgpuComputePipelineResource, Error> {
-    if descriptor.shader_spv.is_empty() {
+    if descriptor.wgsl.is_none() && descriptor.shader_spv.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "compute_shader_bytes_missing",
         )));
     }
-    if !descriptor.shader_spv.len().is_multiple_of(4) {
+    if descriptor.wgsl.is_none() && !descriptor.shader_spv.len().is_multiple_of(4) {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "compute_shader_bytes_not_word_aligned",
         )));
@@ -26,9 +26,37 @@ pub(super) fn create_compute_pipeline(
         )));
     }
 
-    let bind_group_layouts = build_bind_group_layouts(&bridge.device.raw, &descriptor.bindings)?;
+    let mut bind_group_layouts =
+        build_bind_group_layouts(&bridge.device.raw, &descriptor.bindings)?;
+    let uniform_immediate = descriptor
+        .wgsl
+        .as_deref()
+        .is_some_and(|wgsl| super::immediate_uniform::needed(&bridge.device.raw, wgsl));
+    if uniform_immediate {
+        super::immediate_uniform::append_group(
+            &bridge.device.raw,
+            &mut bind_group_layouts,
+            wgpu::ShaderStages::COMPUTE,
+        );
+    }
     let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
         bind_group_layouts.iter().map(Some).collect();
+    let immediate_size = if bridge
+        .device
+        .raw
+        .features()
+        .contains(wgpu::Features::IMMEDIATES)
+    {
+        descriptor
+            .push_constants
+            .iter()
+            .map(|range| range.offset.saturating_add(range.size))
+            .max()
+            .unwrap_or(0)
+            .min(bridge.device.raw.limits().max_immediate_size)
+    } else {
+        0
+    };
     let pipeline_layout =
         bridge
             .device
@@ -36,14 +64,21 @@ pub(super) fn create_compute_pipeline(
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("rotex-wgpu-compute-pipeline-layout"),
                 bind_group_layouts: &layout_refs,
-                immediate_size: 0,
+                immediate_size,
             });
+    let source = if let Some(wgsl) = &descriptor.wgsl {
+        wgpu::ShaderSource::Wgsl(
+            super::immediate_uniform::prepare_source(wgsl, uniform_immediate).into(),
+        )
+    } else {
+        wgpu::util::make_spirv(&descriptor.shader_spv)
+    };
     let shader = bridge
         .device
         .raw
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rotex-wgpu-compute-shader"),
-            source: wgpu::util::make_spirv(&descriptor.shader_spv),
+            source,
         });
     let pipeline = bridge
         .device
@@ -61,6 +96,7 @@ pub(super) fn create_compute_pipeline(
         descriptor: descriptor.clone(),
         pipeline,
         bind_group_layouts,
+        uniform_immediate,
     })
 }
 

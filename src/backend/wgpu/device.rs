@@ -82,8 +82,11 @@ pub(crate) async fn request_device_from_adapter(
         requested_features.insert(wgpu::Features::POLYGON_MODE_LINE);
     }
     let available = adapter.features();
-    if available.contains(wgpu::Features::IMMEDIATES) && adapter.limits().max_immediate_size > 0 {
+    let adapter_limits = adapter.limits();
+    let mut required_limits = wgpu::Limits::default();
+    if available.contains(wgpu::Features::IMMEDIATES) && adapter_limits.max_immediate_size > 0 {
         requested_features.insert(wgpu::Features::IMMEDIATES);
+        required_limits.max_immediate_size = adapter_limits.max_immediate_size;
     }
     if available.contains(wgpu::Features::TIMESTAMP_QUERY) {
         requested_features.insert(wgpu::Features::TIMESTAMP_QUERY);
@@ -105,6 +108,7 @@ pub(crate) async fn request_device_from_adapter(
 
     let wgpu_descriptor = WgpuDeviceDescriptor {
         required_features: requested_features,
+        required_limits,
         ..Default::default()
     };
     let (raw, queue) = adapter
@@ -119,7 +123,7 @@ pub(crate) async fn request_device_from_adapter(
     })
 }
 
-pub(crate) async fn create_wgpu_instance(
+pub(crate) fn create_wgpu_instance(
     descriptor: &PlatformDescriptor,
 ) -> Result<wgpu::Instance, Error> {
     if !descriptor.platform_extensions.is_empty() {

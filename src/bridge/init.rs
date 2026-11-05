@@ -7,6 +7,15 @@ use super::WgpuBridge;
 use super::types::ResourceStorage;
 
 pub(crate) fn init_bridge(instance: WgpuInstance, device: WgpuDevice) -> Result<WgpuBridge, Error> {
+    let fallback_sampler = device.raw.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("rotex-wgpu-fallback-sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
     Ok(WgpuBridge {
         instance,
         device,
@@ -25,9 +34,12 @@ pub(crate) fn init_bridge(instance: WgpuInstance, device: WgpuDevice) -> Result<
         active_pass: None,
         render_bundle: None,
         pending_acquire_skips: 0,
-        pre_present_hook: None,
         compute_pass_open: false,
         active_compute_pipeline: None,
         compute_binds: Vec::new(),
+        compute_immediates: None,
+        fallback_sampler,
+        immediate_uniform: None,
+        uniform_graphics: HashMap::new(),
     })
 }
