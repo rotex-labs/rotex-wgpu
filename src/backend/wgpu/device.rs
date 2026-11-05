@@ -13,13 +13,18 @@ use rotex_types::{
 
 use crate::caps::{self, CAPS};
 
+/// wgpu instance used to create surfaces.
 pub struct WgpuInstance {
     pub(crate) raw: wgpu::Instance,
 }
 
+/// Adapter, device, and queue used by [`crate::WgpuBridge`].
 pub struct WgpuDevice {
+    /// Adapter this device was opened from.
     pub adapter: wgpu::Adapter,
+    /// wgpu device.
     pub raw: wgpu::Device,
+    /// Queue used for submission.
     pub queue: wgpu::Queue,
 }
 
@@ -28,6 +33,7 @@ impl WgpuInstance {
         Self { raw }
     }
 
+    /// Creates a surface from raw display and window handles.
     pub fn create_surface(
         &self,
         display_handle: RawDisplayHandle,

@@ -38,6 +38,19 @@ jobs:
             exit 1
           fi
 
+      - name: Rustdoc
+        run: |
+          set -euo pipefail
+          if cargo metadata --all-features --format-version 1 >/dev/null 2>/tmp/cargo-metadata.err; then
+            RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no-deps --all-features
+          elif grep -q 'failed to select a version for the requirement `rotex-' /tmp/cargo-metadata.err; then
+            echo "Rustdoc skipped: a Rotex dependency is not on crates.io at the required version yet."
+            cat /tmp/cargo-metadata.err
+          else
+            cat /tmp/cargo-metadata.err
+            exit 1
+          fi
+
       - name: Install cargo-machete
         uses: taiki-e/install-action@v2
         with:

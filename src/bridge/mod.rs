@@ -24,6 +24,7 @@ use rotex_types::{
 use self::shader_cache::ShaderCacheKey;
 use self::types::{DepthTarget, MaterialPipelineKey, ResourceStorage};
 
+/// Translates [`rotex_types::RhiCommand`] values into wgpu calls.
 pub struct WgpuBridge {
     pub(crate) instance: WgpuInstance,
     pub(crate) device: WgpuDevice,
@@ -51,10 +52,12 @@ pub struct WgpuBridge {
 }
 
 impl WgpuBridge {
+    /// Creates a surface and configures a swapchain.
     pub fn attach_surface(&mut self, surface_descriptor: SurfaceDescriptor) -> Result<(), Error> {
         surface::attach_surface(self, surface_descriptor)
     }
 
+    /// Creates the buffers, textures, meshes, and pipelines named in `descriptor`.
     pub fn create_resources(
         &mut self,
         descriptor: ResourceBatchCreate,
@@ -62,28 +65,35 @@ impl WgpuBridge {
         resources::create_resources(self, descriptor)
     }
 
+    /// Replaces the contents or parameters of resources the bridge already holds.
     pub fn update_resources(&mut self, descriptor: ResourceBatchUpdate) -> Result<(), Error> {
         resources::update_resources(self, descriptor)
     }
 
+    /// Records `commands` and submits a frame when the list asks for it.
     pub fn execute(&mut self, commands: &[RhiCommand]) -> Result<(), Error> {
         render::execute(self, commands)
     }
 
+    /// Stores an optional callback associated with presentation.
     pub fn set_pre_present_hook(&mut self, hook: Option<fn()>) {
         self.pre_present_hook = hook;
     }
 
+    /// Reconfigures the swapchain at `extent`.
     pub fn resize(&mut self, extent: Extent2D) -> Result<(), Error> {
         surface::resize(self, extent)
     }
 
+    /// Copies a texture back to the CPU.
     pub fn read_texture(&mut self, id: TextureId) -> Result<TextureReadback, Error> {
         extended::read_texture(self, id)
     }
 
+    /// Drops the bridge and the GPU resources it owns.
     pub fn destroy(self) {}
 
+    /// Names the RHI features this backend does not implement.
     pub fn unsupported_feature_reporting() -> &'static [&'static str] {
         crate::caps::unsupported_feature_reporting()
     }

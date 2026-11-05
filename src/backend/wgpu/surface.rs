@@ -1,19 +1,24 @@
 use super::WgpuDevice;
 use crate::error::{Error, ErrorKind};
 
+/// Surface that can configure a swapchain.
 pub struct WgpuSurface {
     raw: wgpu::Surface<'static>,
 }
 
+/// Surface configuration currently applied to a [`WgpuSurface`].
 pub struct WgpuSwapchain {
+    /// Configuration last applied to the surface.
     pub config: wgpu::SurfaceConfiguration,
 }
 
 impl WgpuSurface {
+    /// Wraps an existing wgpu surface.
     pub fn new(raw: wgpu::Surface<'static>) -> Self {
         Self { raw }
     }
 
+    /// Configures the surface for a swapchain of at least `width` by `height` pixels.
     pub fn create_swapchain(
         &self,
         device: &WgpuDevice,
@@ -73,6 +78,7 @@ impl WgpuSurface {
         Ok(WgpuSwapchain { config })
     }
 
+    /// Underlying wgpu surface.
     pub fn raw(&self) -> &wgpu::Surface<'static> {
         &self.raw
     }
