@@ -7,8 +7,8 @@ use wgpu::{
 use super::surface::WgpuSurface;
 use crate::error::{Error, ErrorKind};
 use rotex_types::{
-    AdapterCapabilities, AdapterId, AdapterInfo, AdapterQueueSupport, DeviceDescriptor,
-    DeviceFeatures, FeatureSet, GpuApiBackend, HardwareFamily, PlatformDescriptor,
+    AdapterCapabilities, AdapterId, AdapterInfo, AdapterQueueSupport, DebugMode, DeviceDescriptor,
+    FeatureSet, GpuApiBackend, HardwareFamily, PlatformDescriptor,
 };
 
 use crate::caps::{self, CAPS};
@@ -53,12 +53,18 @@ impl WgpuInstance {
 }
 
 pub(crate) fn validate_device_descriptor(descriptor: &DeviceDescriptor) -> Result<(), Error> {
-    if descriptor.required_features.sampler_anisotropy {
+    if descriptor
+        .required_features
+        .contains(FeatureSet::SAMPLER_ANISOTROPY)
+    {
         return Err(Error::recoverable(ErrorKind::Unsupported(
             "sampler_anisotropy_not_supported",
         )));
     }
-    if descriptor.required_features.wide_lines {
+    if descriptor
+        .required_features
+        .contains(FeatureSet::WIDE_LINES)
+    {
         return Err(Error::recoverable(ErrorKind::Unsupported(
             "wide_lines_not_supported",
         )));
@@ -78,7 +84,10 @@ pub(crate) async fn request_device_from_adapter(
     validate_device_descriptor(descriptor)?;
 
     let mut requested_features = wgpu::Features::empty();
-    if descriptor.required_features.fill_mode_non_solid {
+    if descriptor
+        .required_features
+        .contains(FeatureSet::FILL_MODE_NON_SOLID)
+    {
         requested_features.insert(wgpu::Features::POLYGON_MODE_LINE);
     }
     let available = adapter.features();
@@ -126,14 +135,12 @@ pub(crate) async fn request_device_from_adapter(
 pub(crate) fn create_wgpu_instance(
     descriptor: &PlatformDescriptor,
 ) -> Result<wgpu::Instance, Error> {
-    if !descriptor.platform_extensions.is_empty() {
-        return Err(Error::recoverable(ErrorKind::Unsupported(
-            "platform_extensions_not_supported",
-        )));
-    }
-    Ok(wgpu::Instance::new(
-        WgpuInstanceDescriptor::new_without_display_handle(),
-    ))
+    let mut instance = WgpuInstanceDescriptor::new_without_display_handle();
+    instance.flags = match descriptor.debug {
+        DebugMode::Validation => wgpu::InstanceFlags::debugging(),
+        DebugMode::Off => wgpu::InstanceFlags::empty(),
+    };
+    Ok(wgpu::Instance::new(instance))
 }
 
 pub(crate) fn adapter_info(adapter: &wgpu::Adapter, id: AdapterId) -> AdapterInfo {
@@ -155,9 +162,8 @@ pub(crate) fn adapter_info(adapter: &wgpu::Adapter, id: AdapterId) -> AdapterInf
                 compute_queue_count: 1,
                 transfer_queue_count: 1,
             },
-            available_features: map_available_features(features),
+            features: map_available_features(features),
             limits: caps::limits_from_wgpu(&adapter.limits()),
-            extensions: FeatureSet::INDIRECT_DRAW,
             core: CAPS,
         },
     }
@@ -184,10 +190,10 @@ fn map_api_backend(backend: wgpu::Backend) -> GpuApiBackend {
     }
 }
 
-fn map_available_features(features: wgpu::Features) -> DeviceFeatures {
-    DeviceFeatures {
-        sampler_anisotropy: false,
-        fill_mode_non_solid: features.contains(wgpu::Features::POLYGON_MODE_LINE),
-        wide_lines: false,
+fn map_available_features(features: wgpu::Features) -> FeatureSet {
+    let mut set = FeatureSet::INDIRECT_DRAW;
+    if features.contains(wgpu::Features::POLYGON_MODE_LINE) {
+        set = set.union(FeatureSet::FILL_MODE_NON_SOLID);
     }
+    set
 }

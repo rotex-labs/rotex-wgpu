@@ -49,10 +49,14 @@ pub(crate) fn capabilities_for(device: &wgpu::Device) -> BackendCapabilities {
     if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         core.queries = Support::Emulated;
     }
+    let mut features_set = FeatureSet::INDIRECT_DRAW;
+    if features.contains(wgpu::Features::POLYGON_MODE_LINE) {
+        features_set = features_set.union(FeatureSet::FILL_MODE_NON_SOLID);
+    }
     BackendCapabilities {
         core,
         limits: limits_from_wgpu(&device.limits()),
-        extensions: FeatureSet::INDIRECT_DRAW,
+        features: features_set,
     }
 }
 
