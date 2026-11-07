@@ -13,8 +13,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 async-trait = "0.1.89"
 raw-window-handle = "0.6"
-rotex-core = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "acebfd3bfda1d293215d0fb2f6e546c46e032c7e" }
-rotex-types = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "acebfd3bfda1d293215d0fb2f6e546c46e032c7e" }
+rotex-core = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "1fe8f0abdfb8545ba4b9cfa9465d085eaf3fb799" }
+rotex-types = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "1fe8f0abdfb8545ba4b9cfa9465d085eaf3fb799" }
 wgpu = { version = "29.0.3", features = ["spirv"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -22,4 +22,4 @@ wgpu = { version = "29.0.3", features = ["fragile-send-sync-non-atomic-wasm"] }
 
 [dev-dependencies]
 pollster = "0.4.0"
-rotex-conformance = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "acebfd3bfda1d293215d0fb2f6e546c46e032c7e" }
+rotex-conformance = { version = "0.3.0", git = "https://github.com/rotex-labs/rotex-core", rev = "1fe8f0abdfb8545ba4b9cfa9465d085eaf3fb799" }
