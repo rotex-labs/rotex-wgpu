@@ -13,8 +13,8 @@ pub struct ActiveGraphicsPass {
 mod direct;
 mod pipeline;
 
-pub(super) use pipeline::create_explicit_pipeline;
 use direct::{occlusion_query_for_pass, record_direct_pass, remaining_needs_direct};
+pub(super) use pipeline::create_explicit_pipeline;
 
 fn ensure_depth_target(bridge: &mut WgpuBridge) -> Result<&wgpu::TextureView, Error> {
     let swapchain = bridge

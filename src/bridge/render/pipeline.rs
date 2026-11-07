@@ -155,7 +155,10 @@ pub(super) fn rhi_build_pipeline(
     Ok(pipeline)
 }
 
-pub(super) fn shader_uses_uniform(bridge: &WgpuBridge, package: &rotex_types::ShaderPackage) -> bool {
+pub(super) fn shader_uses_uniform(
+    bridge: &WgpuBridge,
+    package: &rotex_types::ShaderPackage,
+) -> bool {
     match &package.variants.wgsl {
         Some(rotex_types::shader::ShaderPayload::Wgsl(source)) => {
             super::super::immediate_uniform::needed(&bridge.device.raw, source)
