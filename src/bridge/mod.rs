@@ -160,8 +160,8 @@ impl GpuBackend for WgpuBridge {
         WgpuBridge::read_texture(self, id).map_err(to_core_error)
     }
 
-    fn destroy(self: Box<Self>) {
-        WgpuBridge::destroy(*self);
+    fn destroy(self) {
+        drop(self);
     }
 
     fn invalidate_command_cache(&mut self) {
