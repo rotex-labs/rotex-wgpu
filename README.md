@@ -30,7 +30,7 @@ Stateless wgpu translator, including headless use.
 
 ## Status
 
-Version 0.2.0. Barriers are emulated: the command is accepted and wgpu inserts its own hazards. Push constants are native only when the device supports immediates.
+Version 0.3.0. Barriers are emulated: the command is accepted and wgpu inserts its own hazards. Push constants are native only when the device supports immediates.
 
 ## License
 
